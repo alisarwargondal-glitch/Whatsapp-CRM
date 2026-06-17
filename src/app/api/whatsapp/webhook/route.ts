@@ -38,6 +38,7 @@ interface WhatsAppMessage {
   sticker?: { id: string; mime_type: string }
   location?: { latitude: number; longitude: number; name?: string; address?: string }
   reaction?: { message_id: string; emoji: string }
+  button?: { payload: string; text: string }
   /**
    * Set when the customer taps a button or list row on an interactive
    * message we sent. `button_reply.id` / `list_reply.id` is whatever id
@@ -306,9 +307,9 @@ function ladderLevel(s: string): number {
 
 /**
  * Can a recipient transition from `current` to `incoming`?
- *   - Along the ladder, only forward moves are allowed.
- *   - `failed` is accepted only from `pending` or `sent`; it's refused
- *     once the recipient has reached any of the success states.
+ * - Along the ladder, only forward moves are allowed.
+ * - `failed` is accepted only from `pending` or `sent`; it's refused
+ * once the recipient has reached any of the success states.
  */
 function isValidStatusTransition(current: string, incoming: string): boolean {
   if (incoming === 'failed') {
@@ -576,7 +577,7 @@ async function processMessage(
   // allowed value so the INSERT doesn't fail with a constraint error.
   const ALLOWED_CONTENT_TYPES = new Set([
     'text', 'image', 'document', 'audio', 'video',
-    'location', 'template', 'interactive',
+    'location', 'template', 'interactive', 'button'
   ])
   const contentType = ALLOWED_CONTENT_TYPES.has(message.type)
     ? message.type
@@ -663,16 +664,16 @@ async function processMessage(
     message:
       interactiveReplyId
         ? {
-            kind: 'interactive_reply',
-            reply_id: interactiveReplyId,
-            reply_title: contentText ?? '',
-            meta_message_id: message.id,
-          }
+          kind: 'interactive_reply',
+          reply_id: interactiveReplyId,
+          reply_title: contentText ?? '',
+          meta_message_id: message.id,
+        }
         : {
-            kind: 'text',
-            text: contentText ?? message.text?.body ?? '',
-            meta_message_id: message.id,
-          },
+          kind: 'text',
+          text: contentText ?? message.text?.body ?? '',
+          meta_message_id: message.id,
+        },
     isFirstInboundMessage,
   })
   const flowConsumed = flowResult.consumed
@@ -833,6 +834,17 @@ async function parseMessageContent(
     case 'reaction':
       return { ...empty, contentText: message.reaction?.emoji || null }
 
+    case 'button':
+      // Handle legacy 'button' type identically to 'interactive' button replies
+      if (message.button) {
+        return {
+          ...empty,
+          contentText: message.button.text || '[Button reply]',
+          interactiveReplyId: message.button.payload,
+        }
+      }
+      return { ...empty, contentText: '[Button reply]' }
+
     case 'interactive': {
       // The customer tapped a reply button or a list row on a message
       // we previously sent. Meta delivers `interactive.button_reply` for
@@ -866,7 +878,7 @@ type ContactRow = any
 interface ContactOutcome {
   contact: ContactRow
   /** True when this call created the row; drives new_contact_created
-   *  automation dispatch in processMessage. */
+   * automation dispatch in processMessage. */
   wasCreated: boolean
 }
 
