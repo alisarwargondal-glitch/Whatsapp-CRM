@@ -1,241 +1,29 @@
-"use client";
-
-import { useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
-import {
-  Clock,
-  Check,
-  CheckCheck,
-  XCircle,
-  FileText,
-  MapPin,
-  LayoutTemplate,
-  ImageOff,
-  CornerDownLeft,
-} from "lucide-react";
 import { format } from "date-fns";
-import { ReplyQuote } from "./reply-quote";
-import { MessageReactions } from "./message-reactions";
+import { Check, CheckCheck, Clock } from "lucide-react";
+import { ReactionPill } from "./reaction-pill";
+
+interface ReplyQuote {
+  authorLabel: string;
+  preview: string;
+}
 
 interface MessageBubbleProps {
   message: Message;
-  /** Pre-computed quote info for messages that reply to another. */
-  reply?: { authorLabel: string; preview: string } | null;
+  reply?: ReplyQuote | null;
   reactions?: MessageReaction[];
   currentUserId?: string;
   onToggleReaction?: (emoji: string) => void;
 }
 
-function StatusIcon({ status }: { status: Message["status"] }) {
-  switch (status) {
-    case "sending":
-      return <Clock className="h-3 w-3 text-slate-400" />;
-    case "sent":
-      return <Check className="h-3 w-3 text-slate-400" />;
-    case "delivered":
-      return <CheckCheck className="h-3 w-3 text-slate-400" />;
-    case "read":
-      return <CheckCheck className="h-3 w-3 text-blue-400" />;
-    case "failed":
-      return <XCircle className="h-3 w-3 text-red-400" />;
-    default:
-      return null;
-  }
-}
-
-function MediaUnavailable({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 rounded-lg bg-slate-700/40 px-3 py-2 text-xs text-slate-300">
-      <ImageOff className="h-4 w-4 shrink-0 text-slate-500" />
-      <span>{label} unavailable</span>
-    </div>
-  );
-}
-
-function MediaImage({ url, alt }: { url: string; alt: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [error, setError] = useState(false);
-  const [loading, setLoading] = useState(true);
-
-  const loadImage = useCallback(async () => {
-    if (!url) return;
-
-    // Proxy URLs need auth fetch to create blob URL
-    if (url.startsWith("/api/whatsapp/media/")) {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("Failed to load media");
-        const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        setSrc(blobUrl);
-      } catch {
-        setError(true);
-      } finally {
-        setLoading(false);
-      }
-    } else {
-      setSrc(url);
-      setLoading(false);
-    }
-  }, [url]);
-
-  useEffect(() => {
-    loadImage();
-    return () => {
-      if (src?.startsWith("blob:")) {
-        URL.revokeObjectURL(src);
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadImage]);
-
-  if (error) {
-    return (
-      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-slate-700">
-        <ImageOff className="h-8 w-8 text-slate-500" />
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-slate-700">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={src ?? ""}
-      alt={alt}
-      className="max-h-64 max-w-60 rounded-lg object-cover"
-      onError={() => setError(true)}
-    />
-  );
-}
-
-function MessageContent({ message }: { message: Message }) {
-  switch (message.content_type) {
-    case "text":
-      return (
-        <p className="whitespace-pre-wrap break-words text-sm">
-          {message.content_text}
-        </p>
-      );
-
-    case "image":
-      return (
-        <div>
-          {message.media_url ? (
-            <MediaImage url={message.media_url} alt="Shared image" />
-          ) : (
-            <MediaUnavailable label="Image" />
-          )}
-          {message.content_text && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm">
-              {message.content_text}
-            </p>
-          )}
-        </div>
-      );
-
-    case "video":
-      return (
-        <div>
-          {message.media_url ? (
-            <video
-              src={message.media_url}
-              controls
-              className="max-h-64 max-w-60 rounded-lg"
-            />
-          ) : (
-            <MediaUnavailable label="Video" />
-          )}
-          {message.content_text && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm">
-              {message.content_text}
-            </p>
-          )}
-        </div>
-      );
-
-    case "audio":
-      return (
-        <div>
-          {message.media_url ? (
-            <audio src={message.media_url} controls className="max-w-60" />
-          ) : (
-            <MediaUnavailable label="Audio" />
-          )}
-        </div>
-      );
-
-    case "document":
-      if (!message.media_url) {
-        return <MediaUnavailable label={message.content_text || "Document"} />;
-      }
-      return (
-        <a
-          href={message.media_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-lg bg-slate-700/50 px-3 py-2 text-sm hover:bg-slate-700"
-        >
-          <FileText className="h-5 w-5 shrink-0 text-slate-400" />
-          <span className="truncate">
-            {message.content_text || "Document"}
-          </span>
-        </a>
-      );
-
-    case "template":
-      return (
-        <div>
-          <span className="mb-1 inline-flex items-center gap-1 rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-            <LayoutTemplate className="h-3 w-3" />
-            Template
-          </span>
-          {message.content_text && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm">
-              {message.content_text}
-            </p>
-          )}
-        </div>
-      );
-
-    case "location":
-      return (
-        <div className="flex items-center gap-2 text-sm">
-          <MapPin className="h-4 w-4 shrink-0 text-slate-400" />
-          <span>{message.content_text || "Location shared"}</span>
-        </div>
-      );
-
-    case "button":
-    case "interactive": {
-      return (
-        <div className="flex flex-col gap-0.5">
-          <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-            <CornerDownLeft className="h-3 w-3" />
-            Button reply
-          </span>
-          <p className="whitespace-pre-wrap break-words text-sm">
-            {message.content_text || "[Button reply]"}
-          </p>
-        </div>
-      );
-    }
-
-    default:
-      return (
-        <p className="whitespace-pre-wrap break-words text-sm">
-          {message.content_text || "[Unsupported message type]"}
-        </p>
-      );
-  }
-}
+const MESSAGE_STATUS_ICONS = {
+  sending: Clock,
+  sent: Check,
+  delivered: CheckCheck,
+  read: CheckCheck,
+  failed: () => <span className="text-[10px] font-bold">!</span>,
+};
 
 export function MessageBubble({
   message,
@@ -244,45 +32,108 @@ export function MessageBubble({
   currentUserId,
   onToggleReaction,
 }: MessageBubbleProps) {
-  const isAgent = message.sender_type === "agent" || message.sender_type === "bot";
-  const time = format(new Date(message.created_at), "HH:mm");
+  // We treat agent and bot messages as "outgoing" (right side)
+  const isAgentMsg = message.sender_type === "agent" || message.sender_type === "bot";
+
+  const StatusIcon = isAgentMsg ? MESSAGE_STATUS_ICONS[message.status] : null;
+
+  // Render the text content based on the message type.
+  // We added "interactive" and "button" fallbacks so quick-replies show up!
+  let content = message.content_text || "Unsupported message type";
+  if (message.content_type === "image" || message.content_type === "document") {
+    content = `[${message.content_type}] ${message.content_text || ""}`;
+  }
+
+  // Aggregate reactions by emoji
+  const groupedReactions = (reactions ?? []).reduce(
+    (acc, r) => {
+      acc[r.emoji] = (acc[r.emoji] || 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+
+  // Check if current user has reacted
+  const ownReaction = reactions?.find(
+    (r) => r.actor_type === "agent" && r.actor_id === currentUserId,
+  );
 
   return (
     <div
       className={cn(
-        "flex flex-col",
-        isAgent ? "items-end" : "items-start",
+        "flex w-full group",
+        isAgentMsg ? "justify-end" : "justify-start"
       )}
     >
       <div
         className={cn(
-          "relative rounded-2xl px-3 py-2",
-          isAgent
-            ? "rounded-br-md bg-primary text-primary-foreground"
-            : "rounded-bl-md bg-slate-800 text-slate-100",
+          "relative max-w-[85%] rounded-2xl px-3 py-2 text-sm shadow-sm sm:max-w-[75%]",
+          isAgentMsg
+            ? "bg-primary text-primary-foreground rounded-br-sm"
+            : "bg-slate-800 text-slate-100 rounded-bl-sm"
         )}
       >
+        {/* Reply Quote Block */}
         {reply && (
-          <ReplyQuote authorLabel={reply.authorLabel} preview={reply.preview} />
+          <div
+            className={cn(
+              "mb-2 mt-0.5 rounded-md border-l-2 p-2 text-xs",
+              isAgentMsg
+                ? "border-primary-foreground/50 bg-primary-foreground/10 text-primary-foreground"
+                : "border-primary bg-slate-900/50 text-slate-300"
+            )}
+          >
+            <div className="font-semibold">{reply.authorLabel}</div>
+            <div className="mt-0.5 truncate opacity-90">{reply.preview}</div>
+          </div>
         )}
-        <MessageContent message={message} />
+
+        {/* Message Content */}
+        <p className="whitespace-pre-wrap break-words">{content}</p>
+
+        {/* Timestamp & Status */}
         <div
           className={cn(
-            "mt-1 flex items-center gap-1",
-            isAgent ? "justify-end" : "justify-start",
+            "mt-1 flex items-center justify-end gap-1 text-[10px]",
+            isAgentMsg ? "text-primary-foreground/70" : "text-slate-400"
           )}
         >
-          <span className="text-[10px] text-white/60">{time}</span>
-          {isAgent && <StatusIcon status={message.status} />}
+          <span>{format(new Date(message.created_at), "HH:mm")}</span>
+          {StatusIcon && (
+            <StatusIcon
+              className={cn(
+                "h-3 w-3",
+                message.status === "read" && "text-blue-400",
+                message.status === "failed" && "text-red-400"
+              )}
+            />
+          )}
         </div>
+
+        {/* Reactions */}
+        {Object.keys(groupedReactions).length > 0 && (
+          <div
+            className={cn(
+              "absolute -bottom-3 flex flex-wrap gap-1",
+              isAgentMsg ? "right-2 flex-row-reverse" : "left-2"
+            )}
+          >
+            {Object.entries(groupedReactions).map(([emoji, count]) => (
+              <ReactionPill
+                key={emoji}
+                emoji={emoji}
+                count={count}
+                hasReacted={ownReaction?.emoji === emoji}
+                onClick={
+                  onToggleReaction
+                    ? () => onToggleReaction(emoji)
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+        )}
       </div>
-      {reactions && reactions.length > 0 && onToggleReaction && (
-        <MessageReactions
-          reactions={reactions}
-          currentUserId={currentUserId}
-          onToggle={onToggleReaction}
-        />
-      )}
     </div>
   );
 }
