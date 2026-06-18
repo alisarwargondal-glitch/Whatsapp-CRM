@@ -2,7 +2,6 @@ import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import { format } from "date-fns";
 import { Check, CheckCheck, Clock } from "lucide-react";
-import { ReactionPill } from "./reaction-pill";
 
 interface ReplyQuote {
   authorLabel: string;
@@ -25,6 +24,34 @@ const MESSAGE_STATUS_ICONS = {
   failed: () => <span className="text-[10px] font-bold">!</span>,
 };
 
+// We built the ReactionPill directly into this file so Vercel doesn't have to look for it!
+function ReactionPill({
+  emoji,
+  count,
+  hasReacted,
+  onClick,
+}: {
+  emoji: string;
+  count: number;
+  hasReacted?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={!onClick}
+      className={cn(
+        "flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/90 px-1.5 py-0.5 text-[10px] shadow-sm transition-colors",
+        hasReacted ? "border-primary text-primary" : "text-slate-300 hover:bg-slate-700",
+        !onClick && "cursor-default"
+      )}
+    >
+      <span>{emoji}</span>
+      <span className="font-medium">{count}</span>
+    </button>
+  );
+}
+
 export function MessageBubble({
   message,
   reply,
@@ -32,13 +59,11 @@ export function MessageBubble({
   currentUserId,
   onToggleReaction,
 }: MessageBubbleProps) {
-  // We treat agent and bot messages as "outgoing" (right side)
   const isAgentMsg = message.sender_type === "agent" || message.sender_type === "bot";
 
   const StatusIcon = isAgentMsg ? MESSAGE_STATUS_ICONS[message.status] : null;
 
   // Render the text content based on the message type.
-  // We added "interactive" and "button" fallbacks so quick-replies show up!
   let content = message.content_text || "Unsupported message type";
   if (message.content_type === "image" || message.content_type === "document") {
     content = `[${message.content_type}] ${message.content_text || ""}`;
