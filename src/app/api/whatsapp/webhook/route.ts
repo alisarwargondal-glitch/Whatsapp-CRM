@@ -183,8 +183,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // Process asynchronously so we can ack Meta within their timeout.
-  processWebhook(body).catch((error) => {
+  // We MUST await this on Vercel, otherwise the serverless function
+  // goes to sleep before the database operations finish!
+  await processWebhook(body).catch((error) => {
     console.error('Error processing webhook:', error)
   })
 
