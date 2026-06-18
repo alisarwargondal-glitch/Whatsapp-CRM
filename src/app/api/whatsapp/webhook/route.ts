@@ -459,13 +459,11 @@ async function processMessage(
 
   void mediaType
 
-  // We explicitly removed 'button' from this array to match the database exactly.
   const ALLOWED_CONTENT_TYPES = new Set([
     'text', 'image', 'document', 'audio', 'video',
     'location', 'template', 'interactive'
   ])
 
-  // Here we translate Meta's 'button' type into our database's 'interactive' type!
   const contentType = ALLOWED_CONTENT_TYPES.has(message.type)
     ? message.type
     : message.type === 'button'
@@ -763,4 +761,24 @@ async function findOrCreateConversation(
     .eq('contact_id', contactId)
     .single()
 
-  if (!findError
+  if (!findError && existing) {
+    return existing
+  }
+
+  const { data: newConv, error: createError } = await supabaseAdmin()
+    .from('conversations')
+    .insert({
+      account_id: accountId,
+      user_id: configOwnerUserId,
+      contact_id: contactId,
+    })
+    .select()
+    .single()
+
+  if (createError) {
+    console.error('Error creating conversation:', createError)
+    return null
+  }
+
+  return newConv
+}
