@@ -527,6 +527,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
           )}
         </div>
 
+
         <DialogFooter className="bg-slate-900 border-t border-slate-800/60 pt-3">
           <Button
             type="button"
