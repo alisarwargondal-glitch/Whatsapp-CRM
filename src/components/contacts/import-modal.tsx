@@ -3,10 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import {
-  dedupeByPhone,
-  normalizeKey,
-} from '@/lib/contacts/dedupe';
+import { dedupeByPhone } from '@/lib/contacts/dedupe';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -256,7 +253,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
-        // FIX: Explicitly chain .select('id').maybeSingle() to guarantee the row properties return safely
         const { data: newTag, error: tagErr } = await supabase
           .from('tags')
           .insert({
@@ -272,7 +268,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         if (newTag?.id) {
           targetTagId = newTag.id;
         } else {
-          // Fallback query if insert returns empty under strict database triggers
           const { data: verifiedTags } = await supabase
             .from('tags')
             .select('id')
@@ -289,6 +284,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       let imported = 0;
       let skipped = 0;
       let failed = 0;
+      let limitReachedOccurred = false;
 
       const { unique, duplicates: inFileDupes } = dedupeByPhone(parsedRows);
       skipped += inFileDupes;
@@ -300,13 +296,15 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
       const existingPhoneMap = new Map<string, string>();
       existingRows?.forEach(r => {
-        if (r.phone_normalized) existingPhoneMap.set(r.phone_normalized, r.id);
-        if (r.phone) existingPhoneMap.set(normalizeKey(r.phone), r.id);
+        // FIX: Re-index keys cleanly utilizing identical digits-only substitution matches
+        if (r.phone_normalized) existingPhoneMap.set(r.phone_normalized.replace(/\D/g, ''), r.id);
+        if (r.phone) existingPhoneMap.set(r.phone.replace(/\D/g, ''), r.id);
       });
 
       for (const row of unique) {
         try {
-          const normalizedPhone = normalizeKey(row.phone);
+          // FIX: Align normalization directly with database rules
+          const normalizedPhone = row.phone.replace(/\D/g, '');
           let contactId = existingPhoneMap.get(normalizedPhone);
 
           if (contactId) {
@@ -332,16 +330,23 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
               email: row.email || null,
             };
 
-            // FIX: Chain strict return data handling here as well
             const { data: newContact, error: contactErr } = await supabase
               .from('contacts')
               .insert(contactPayload)
               .select('id')
               .maybeSingle();
 
-            if (contactErr && (contactErr.code === '23505' || contactErr.message?.includes('unique'))) {
-              skipped++;
-              continue;
+            if (contactErr) {
+              if (contactErr.code === '23505' || contactErr.message?.includes('unique')) {
+                skipped++;
+                continue;
+              }
+              // FIX: If a limit error is hit, track it without crashing the rest of the file
+              if (contactErr.message?.includes('limit') || contactErr.code === 'P0001') {
+                limitReachedOccurred = true;
+                failed++;
+                continue;
+              }
             }
 
             if (!contactErr && newContact?.id) {
@@ -353,7 +358,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                 tag_id: targetTagId
               });
             } else {
-              // Final query backup fallback checker
               const { data: verifiedContacts } = await supabase
                 .from('contacts')
                 .select('id')
@@ -379,14 +383,16 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       }
 
       setResult({ imported, skipped, failed });
+
+      if (limitReachedOccurred) {
+        toast.warning("Some contacts couldn't be added because your plan's account limit has been reached.");
+      }
       if (imported > 0 || skipped > 0) {
         toast.success(`Processing complete for folder group: ${cleanFolderName}`);
         onImported();
       }
     } catch (err: unknown) {
       console.error("CRITICAL IMPORT ERROR DETECTED:", err);
-
-      // FIX: Stringify the entire object structure so it cannot hide behind [object Object]
       let message = 'Unknown error';
       if (err instanceof Error) {
         message = err.message;
@@ -395,9 +401,8 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       } else {
         message = String(err);
       }
-
       toast.error(`Import Error Details: ${message}`, { duration: 15000 });
-    } finally {
+    } finaly {
       setImporting(false);
     }
   }
