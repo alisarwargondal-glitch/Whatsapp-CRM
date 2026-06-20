@@ -256,28 +256,34 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
-        // Inserts tag safely
-        const { error: tagErr } = await supabase
+        // FIX: Explicitly chain .select('id').maybeSingle() to guarantee the row properties return safely
+        const { data: newTag, error: tagErr } = await supabase
           .from('tags')
           .insert({
             account_id: accountId,
             name: cleanFolderName,
             color: randomColor
-          });
+          })
+          .select('id')
+          .maybeSingle();
 
         if (tagErr) throw tagErr;
 
-        // Re-queries to get the safe record without relying on return pointers
-        const { data: verifiedTags } = await supabase
-          .from('tags')
-          .select('id')
-          .eq('account_id', accountId)
-          .ilike('name', cleanFolderName);
+        if (newTag?.id) {
+          targetTagId = newTag.id;
+        } else {
+          // Fallback query if insert returns empty under strict database triggers
+          const { data: verifiedTags } = await supabase
+            .from('tags')
+            .select('id')
+            .eq('account_id', accountId)
+            .ilike('name', cleanFolderName);
 
-        if (!verifiedTags || verifiedTags.length === 0) {
-          throw new Error('Folder reference initialization error.');
+          if (!verifiedTags || verifiedTags.length === 0) {
+            throw new Error('Folder group layout initialization failed.');
+          }
+          targetTagId = verifiedTags[0].id;
         }
-        targetTagId = verifiedTags[0].id;
       }
 
       let imported = 0;
@@ -326,32 +332,45 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
               email: row.email || null,
             };
 
-            const { error: insertErr } = await supabase
+            // FIX: Chain strict return data handling here as well
+            const { data: newContact, error: contactErr } = await supabase
               .from('contacts')
-              .insert(contactPayload);
+              .insert(contactPayload)
+              .select('id')
+              .maybeSingle();
 
-            if (insertErr && (insertErr.code === '23505' || insertErr.message?.includes('unique'))) {
+            if (contactErr && (contactErr.code === '23505' || contactErr.message?.includes('unique'))) {
               skipped++;
               continue;
             }
 
-            // Fetches the newly generated contact record back from database references safely
-            const { data: verifiedContacts } = await supabase
-              .from('contacts')
-              .select('id')
-              .eq('account_id', accountId)
-              .eq('phone', row.phone);
-
-            if (!insertErr && verifiedContacts && verifiedContacts.length > 0) {
+            if (!contactErr && newContact?.id) {
               imported++;
-              contactId = verifiedContacts[0].id;
+              contactId = newContact.id;
               await insertContactCustomFields(contactId, row.customFieldsMap);
               await supabase.from('contact_tags').insert({
                 contact_id: contactId,
                 tag_id: targetTagId
               });
             } else {
-              failed++;
+              // Final query backup fallback checker
+              const { data: verifiedContacts } = await supabase
+                .from('contacts')
+                .select('id')
+                .eq('account_id', accountId)
+                .eq('phone', row.phone);
+
+              if (verifiedContacts && verifiedContacts.length > 0) {
+                imported++;
+                contactId = verifiedContacts[0].id;
+                await insertContactCustomFields(contactId, row.customFieldsMap);
+                await supabase.from('contact_tags').insert({
+                  contact_id: contactId,
+                  tag_id: targetTagId
+                });
+              } else {
+                failed++;
+              }
             }
           }
         } catch (innerErr) {
