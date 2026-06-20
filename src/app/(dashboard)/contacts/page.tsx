@@ -6,7 +6,6 @@ import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table,
   TableBody,
@@ -43,7 +42,6 @@ import {
   ChevronRight,
   SlidersHorizontal,
   CheckSquare,
-  Square,
   AlertCircle,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
@@ -333,10 +331,11 @@ export default function ContactsPage() {
           <TableHeader>
             <TableRow className="border-slate-800 hover:bg-transparent bg-slate-900/40">
               <TableHead className="w-12 text-center px-4">
-                <Checkbox
+                <input
+                  type="checkbox"
                   checked={contacts.length > 0 && selectedContactIds.length === contacts.length}
-                  onCheckedChange={handleSelectAllToggle}
-                  className="border-slate-600 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                  onChange={handleSelectAllToggle}
+                  className="rounded border-slate-700 bg-slate-900 text-primary focus:ring-primary size-4 accent-primary cursor-pointer"
                 />
               </TableHead>
               <TableHead className="text-slate-400">Name</TableHead>
@@ -390,15 +389,16 @@ export default function ContactsPage() {
                       }`}
                     onClick={() => openDetail(contact.id)}
                   >
-                    {/* Row Level Checkbox Selector */}
+                    {/* Native Table Checkbox Selection Input Block */}
                     <TableCell
                       className="text-center px-4"
                       onClick={(e) => handleSelectRowToggle(contact.id, e)}
                     >
-                      <Checkbox
+                      <input
+                        type="checkbox"
                         checked={isSelected}
-                        onCheckedChange={() => { }} // Controlled strictly via the cell row intercept handler
-                        className="border-slate-700 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                        onChange={() => { }} // Controlled entirely via cell box context intercept click handler
+                        className="rounded border-slate-700 bg-slate-900 text-primary focus:ring-primary size-4 accent-primary cursor-pointer"
                       />
                     </TableCell>
                     <TableCell className="text-white font-medium">
