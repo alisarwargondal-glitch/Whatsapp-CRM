@@ -105,18 +105,10 @@ function parseCSV(
     const normalizedCrmName = cf.field_name.toLowerCase().replace(/[^a-z0-9]/g, '');
     let fileIndex = headers.indexOf(normalizedCrmName);
 
-    if (fileIndex === -1 && normalizedCrmName.includes('unit')) {
-      fileIndex = headers.indexOf('unit');
-    }
-    if (fileIndex === -1 && (normalizedCrmName.includes('comment') || normalizedCrmName.includes('view') || normalizedCrmName.includes('remark'))) {
-      fileIndex = headers.indexOf('view');
-    }
-    if (fileIndex === -1 && normalizedCrmName.includes('cluster')) {
-      fileIndex = headers.indexOf('cluster');
-    }
-    if (fileIndex === -1 && normalizedCrmName.includes('bedroom')) {
-      fileIndex = headers.indexOf('bedrooms');
-    }
+    if (fileIndex === -1 && normalizedCrmName.includes('unit')) fileIndex = headers.indexOf('unit');
+    if (fileIndex === -1 && (normalizedCrmName.includes('comment') || normalizedCrmName.includes('view') || normalizedCrmName.includes('remark'))) fileIndex = headers.indexOf('view');
+    if (fileIndex === -1 && normalizedCrmName.includes('cluster')) fileIndex = headers.indexOf('cluster');
+    if (fileIndex === -1 && normalizedCrmName.includes('bedroom')) fileIndex = headers.indexOf('bedrooms');
 
     if (fileIndex !== -1) {
       customFieldMappings.push({ id: cf.id, index: fileIndex });
@@ -237,23 +229,24 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       const user = session?.user;
       if (!user) throw new Error('Not authenticated');
 
-      let targetTagId = '';
+      let targetFolderId = '';
       const cleanFolderName = folderName.trim();
 
-      const { data: existingTags } = await supabase
-        .from('tags')
+      // 1. Manage the new Folders Architecture (Instead of Tags)
+      const { data: existingFolders } = await supabase
+        .from('folders')
         .select('id')
         .eq('account_id', accountId)
         .ilike('name', cleanFolderName);
 
-      if (existingTags && existingTags.length > 0) {
-        targetTagId = existingTags[0].id;
+      if (existingFolders && existingFolders.length > 0) {
+        targetFolderId = existingFolders[0].id;
       } else {
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
-        const { data: newTag, error: tagErr } = await supabase
-          .from('tags')
+        const { data: newFolder, error: folderErr } = await supabase
+          .from('folders')
           .insert({
             user_id: user.id,
             account_id: accountId,
@@ -263,21 +256,21 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
           .select('id')
           .maybeSingle();
 
-        if (tagErr) throw tagErr;
+        if (folderErr) throw folderErr;
 
-        if (newTag?.id) {
-          targetTagId = newTag.id;
+        if (newFolder?.id) {
+          targetFolderId = newFolder.id;
         } else {
-          const { data: verifiedTags } = await supabase
-            .from('tags')
+          const { data: verifiedFolders } = await supabase
+            .from('folders')
             .select('id')
             .eq('account_id', accountId)
             .ilike('name', cleanFolderName);
 
-          if (!verifiedTags || verifiedTags.length === 0) {
-            throw new Error('Folder group layout initialization failed.');
+          if (!verifiedFolders || verifiedFolders.length === 0) {
+            throw new Error('Folder creation failed.');
           }
-          targetTagId = verifiedTags[0].id;
+          targetFolderId = verifiedFolders[0].id;
         }
       }
 
@@ -286,6 +279,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       let failed = 0;
       let limitReachedOccurred = false;
 
+      // Inline Native Deduplication
       const uniqueRows: ParsedRow[] = [];
       const seenPhones = new Set<string>();
       let inFileDupes = 0;
@@ -325,44 +319,32 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
           let contactId = existingPhoneMap.get(normalizedPhone);
 
           if (contactId) {
+            // Existing Contact: Just move them into the new Folder!
             skipped++;
-            const { data: existingLinks } = await supabase
-              .from('contact_tags')
-              .select('contact_id')
-              .eq('contact_id', contactId)
-              .eq('tag_id', targetTagId);
+            await supabase
+              .from('contacts')
+              .update({ folder_id: targetFolderId })
+              .eq('id', contactId);
 
-            if (!existingLinks || existingLinks.length === 0) {
-              await supabase.from('contact_tags').insert({
-                contact_id: contactId,
-                tag_id: targetTagId
-              });
-            }
           } else {
-
+            // New Contact Payload including the Folder Link
             const contactPayload: Record<string, any> = {
               user_id: user.id,
               account_id: accountId,
+              folder_id: targetFolderId,
               phone: row.phone,
               name: row.name || null,
               email: row.email || null,
+              company: row.company || null,
             };
 
-            // Attempt 1: Standard Insert (Assumes DB handles normalization automatically)
-            let insertAttempt = await supabase
-              .from('contacts')
-              .insert(contactPayload)
-              .select('id')
-              .maybeSingle();
+            // Dynamic Schema Fallback Loop
+            let insertAttempt = await supabase.from('contacts').insert(contactPayload).select('id').maybeSingle();
 
-            // Attempt 2: DYNAMIC SCHEMA FALLBACK
-            // If the database complains about a missing phone_normalized value, it means the column was altered to NOT NULL and we must provide it manually
             if (insertAttempt.error && insertAttempt.error.code === '23502' && insertAttempt.error.message.includes('phone_normalized')) {
               contactPayload.phone_normalized = normalizedPhone;
               insertAttempt = await supabase.from('contacts').insert(contactPayload).select('id').maybeSingle();
-            }
-            // Attempt 3: If it complains about a non-DEFAULT value, it is strictly generated and must be removed
-            else if (insertAttempt.error && insertAttempt.error.message.includes('non-DEFAULT')) {
+            } else if (insertAttempt.error && insertAttempt.error.message.includes('non-DEFAULT')) {
               delete contactPayload.phone_normalized;
               insertAttempt = await supabase.from('contacts').insert(contactPayload).select('id').maybeSingle();
             }
@@ -379,39 +361,15 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                 failed++;
                 continue;
               }
-
-              console.error("Row Database Insert Error:", contactErr);
-              toast.error(`Insert Error: ${contactErr.message}`, { id: 'db-error' });
               failed++;
               continue;
             }
 
             if (!contactErr && newContact?.id) {
               imported++;
-              contactId = newContact.id;
-              await insertContactCustomFields(contactId, row.customFieldsMap);
-              await supabase.from('contact_tags').insert({
-                contact_id: contactId,
-                tag_id: targetTagId
-              });
+              await insertContactCustomFields(newContact.id, row.customFieldsMap);
             } else {
-              const { data: verifiedContacts } = await supabase
-                .from('contacts')
-                .select('id')
-                .eq('account_id', accountId)
-                .eq('phone', row.phone);
-
-              if (verifiedContacts && verifiedContacts.length > 0) {
-                imported++;
-                contactId = verifiedContacts[0].id;
-                await insertContactCustomFields(contactId, row.customFieldsMap);
-                await supabase.from('contact_tags').insert({
-                  contact_id: contactId,
-                  tag_id: targetTagId
-                });
-              } else {
-                failed++;
-              }
+              failed++;
             }
           }
         } catch (innerErr) {
@@ -425,7 +383,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         toast.warning("Some contacts couldn't be added because your plan's account limit has been reached.");
       }
       if (imported > 0 || skipped > 0) {
-        toast.success(`Processing complete for folder group: ${cleanFolderName}`);
+        toast.success(`Processing complete for folder: ${cleanFolderName}`);
         onImported();
       }
     } catch (err: unknown) {
@@ -454,7 +412,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             <FolderPlus className="size-5 text-primary" /> Import Contacts into Folder
           </DialogTitle>
           <DialogDescription className="text-slate-400">
-            Upload a spreadsheet file. Contacts will be cleanly organized and grouped inside a dedicated folder view segment.
+            Upload a spreadsheet file. Contacts will be cleanly organized directly into your selected visual directory folder.
           </DialogDescription>
         </DialogHeader>
 
@@ -491,7 +449,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
           {file && !result && (
             <div className="space-y-1.5 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
               <Label htmlFor="folder" className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                Import Folder Name (Creates new or appends to existing)
+                Destination Folder Name
               </Label>
               <Input
                 id="folder"
@@ -552,7 +510,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                 )}
                 {result.skipped > 0 && (
                   <div className="flex items-center gap-1.5 text-amber-400 text-sm">
-                    <AlertTriangle className="size-4" /> {result.skipped} existing contacts assigned to folder
+                    <AlertTriangle className="size-4" /> {result.skipped} existing contacts mapped to folder
                   </div>
                 )}
                 {result.failed > 0 && (
