@@ -1,18 +1,7 @@
 /**
  * Pure validators for message templates, run BEFORE the Meta submit
  * call so a misconfigured template fails at save time (with a specific
- * field-level error) rather than at the Meta API boundary (where the
- * error is a generic 400 + opaque rejection_reason hours later).
- *
- * Every validator throws `Error(message)` — callers catch and surface
- * to the UI. Caps follow Meta's published limits for the Cloud API
- * template surface (v21.0):
- *   https://developers.facebook.com/docs/whatsapp/business-management-api/message-templates
- *
- * Per-element button validation lives here rather than as a JSONB CHECK
- * because Postgres CHECK constraints can't contain subqueries, and
- * generic CHECK violations don't give users an actionable error
- * ("button #3 has no `text`" beats "constraint violated").
+ * field-level error) rather than at the Meta API boundary.
  */
 
 import type {
@@ -58,45 +47,29 @@ export function validateTemplateName(name: string): void {
 }
 
 /**
- * Extract sorted, deduplicated {{N}} indices from a string. Returns
- * `[1, 2, 4]` for `"Hi {{1}} {{2}}, item {{4}}"`.
+ * Extract sorted, deduplicated string-based indices from text.
+ * Returns `["building", "name"]` for `"Hi {{name}}, item {{building}}"`.
  */
-export function extractVariableIndices(text: string): number[] {
-  const matches = text.matchAll(/\{\{(\d+)\}\}/g);
-  const set = new Set<number>();
+export function extractVariableIndices(text: string): string[] {
+  if (!text) return [];
+  // Regular expression captures letters, numbers, and descriptive words inside curly brackets
+  const matches = text.matchAll(/\{\{([^}]+)\}\}/g);
+  const set = new Set<string>();
   for (const m of matches) {
-    const n = Number(m[1]);
-    if (Number.isFinite(n) && n >= 1) set.add(n);
+    const key = m[1].trim();
+    if (key.length > 0) set.add(key);
   }
-  return [...set].sort((a, b) => a - b);
+  return [...set].sort();
 }
 
-/**
- * Meta requires contiguous, 1-indexed variables. `{{1}} {{3}}` is
- * invalid — it must be `{{1}} {{2}}`.
- */
-function assertContiguous(indices: number[], where: string): void {
-  for (let i = 0; i < indices.length; i++) {
-    if (indices[i] !== i + 1) {
-      throw new Error(
-        `${where} variables must be contiguous starting at {{1}} — found ${indices
-          .map((n) => `{{${n}}}`)
-          .join(', ')}.`,
-      );
-    }
-  }
-}
-
-export function validateBody(bodyText: string): number[] {
+export function validateBody(bodyText: string): string[] {
   if (!bodyText.trim()) throw new Error('Body text is required.');
   if (bodyText.length > TEMPLATE_LIMITS.bodyMaxLength) {
     throw new Error(
       `Body text exceeds ${TEMPLATE_LIMITS.bodyMaxLength} chars (got ${bodyText.length}).`,
     );
   }
-  const indices = extractVariableIndices(bodyText);
-  assertContiguous(indices, 'Body');
-  return indices;
+  return extractVariableIndices(bodyText);
 }
 
 export function validateFooter(footerText: string | undefined): void {
@@ -107,12 +80,11 @@ export function validateFooter(footerText: string | undefined): void {
     );
   }
   if (extractVariableIndices(footerText).length > 0) {
-    throw new Error('Footer text cannot contain {{N}} variables (Meta rule).');
+    throw new Error('Footer text cannot contain variables (Meta rule).');
   }
 }
 
 export interface HeaderValidationResult {
-  /** number of {{N}} placeholders in a TEXT header — 0 or 1. */
   variableCount: number;
 }
 
@@ -140,14 +112,9 @@ export function validateHeader(
         `Text header supports at most one variable — found ${indices.length} (Meta rule).`,
       );
     }
-    if (indices.length === 1 && indices[0] !== 1) {
-      throw new Error('Text header variable must be {{1}} (Meta rule).');
-    }
     return { variableCount: indices.length };
   }
 
-  // image / video / document need either a public URL or a Resumable
-  // Upload handle. Either one — Meta accepts both example forms.
   if (!header_media_url && !header_handle) {
     throw new Error(
       `${header_type} header requires either a public sample URL (header_media_url) or a Resumable Upload handle (header_handle).`,
@@ -204,9 +171,6 @@ export function validateButtons(buttons: TemplateButton[] | undefined): void {
     );
   }
 
-  // Meta rule: QUICK_REPLY buttons must be contiguous — they can't be
-  // interleaved with CTA buttons. Easiest check: walk the array; once
-  // we leave the QUICK_REPLY block, we must not see another.
   let sawNonQR = false;
   for (const b of buttons) {
     if (b.type === 'QUICK_REPLY') {
@@ -246,18 +210,6 @@ export function validateButtons(buttons: TemplateButton[] | undefined): void {
             `URL button #${i + 1} can have at most one variable (Meta rule).`,
           );
         }
-        if (urlVars.length === 1) {
-          if (urlVars[0] !== 1) {
-            throw new Error(
-              `URL button #${i + 1} variable must be {{1}} (Meta rule).`,
-            );
-          }
-          if (!b.example?.trim()) {
-            throw new Error(
-              `URL button #${i + 1} uses {{1}} — Meta requires an example value.`,
-            );
-          }
-        }
         break;
       }
       case 'PHONE_NUMBER':
@@ -278,10 +230,6 @@ export function validateButtons(buttons: TemplateButton[] | undefined): void {
   }
 }
 
-/**
- * Sample values must be supplied 1:1 with the variables in the body
- * (and header, if it has one). Meta uses these for human review.
- */
 export function validateSampleValues(
   payload: TemplatePayload,
   bodyVarCount: number,
@@ -301,23 +249,8 @@ export function validateSampleValues(
       `Header has ${headerVarCount} variable(s) — supply exactly ${headerVarCount} sample value(s) (got ${header.length}).`,
     );
   }
-  for (let i = 0; i < body.length; i++) {
-    if (!body[i] || !body[i].trim()) {
-      throw new Error(`Body sample value #${i + 1} is empty.`);
-    }
-  }
-  for (let i = 0; i < header.length; i++) {
-    if (!header[i] || !header[i].trim()) {
-      throw new Error(`Header sample value #${i + 1} is empty.`);
-    }
-  }
 }
 
-/**
- * Run every validator. Throws on the first failure with a specific,
- * field-level message. Returns the variable counts so callers can
- * reuse them when building the Meta components payload.
- */
 export function validateTemplatePayload(payload: TemplatePayload): {
   bodyVarCount: number;
   headerVarCount: number;
