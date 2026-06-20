@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Upload } from 'lucide-react';
+import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Upload, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -48,21 +48,30 @@ export default function ContactsDirectory() {
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Bulk Selection State
+  const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
+
   // Import Modal State
   const [isImportOpen, setIsImportOpen] = useState(false);
 
-  // Column State (Drag and Drop + Visibility)
+  // Column Tracking & Memory State
   const [columnOrder, setColumnOrder] = useState<string[]>(['name', 'phone', 'email', 'company']);
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
     name: true, phone: true, email: true, company: true,
   });
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [showColumnMenu, setShowColumnMenu] = useState(false);
 
   // Edit State
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', phone: '', email: '', company: '' });
+  const [editForm, setEditForm] = useState({ name: '', phone: '', email: '', company: '', custom_values: {} as Record<string, string> });
 
-  // 1. Fetch Folders
+  // Clear selections when changing folders
+  useEffect(() => {
+    setSelectedContacts(new Set());
+  }, [activeFolder]);
+
+  // 1. Fetch Folders & Setup Memory State
   useEffect(() => {
     if (!accountId) return;
     async function loadFolders() {
@@ -81,12 +90,23 @@ export default function ContactsDirectory() {
 
       if (fieldsData) {
         setCustomFields(fieldsData);
-        const newCols = { ...visibleColumns };
-        const newOrder = ['name', 'phone', 'email', 'company'];
+        let newCols = { name: true, phone: true, email: true, company: true } as Record<string, boolean>;
+        let newOrder = ['name', 'phone', 'email', 'company'];
+
         fieldsData.forEach(field => {
-          if (newCols[field.id] === undefined) newCols[field.id] = true;
+          newCols[field.id] = true;
           newOrder.push(field.id);
         });
+
+        // Pull saved adjustments from Browser LocalStorage!
+        const savedOrder = localStorage.getItem('crm_col_order');
+        const savedVis = localStorage.getItem('crm_col_vis');
+        const savedWidths = localStorage.getItem('crm_col_widths');
+
+        if (savedOrder) newOrder = JSON.parse(savedOrder);
+        if (savedVis) newCols = { ...newCols, ...JSON.parse(savedVis) };
+        if (savedWidths) setColumnWidths(JSON.parse(savedWidths));
+
         setVisibleColumns(newCols);
         setColumnOrder(newOrder);
       }
@@ -95,6 +115,12 @@ export default function ContactsDirectory() {
     loadFolders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, supabase]);
+
+  // Save Column Adjustments to Memory whenever they change
+  useEffect(() => {
+    if (columnOrder.length > 0) localStorage.setItem('crm_col_order', JSON.stringify(columnOrder));
+    if (Object.keys(visibleColumns).length > 0) localStorage.setItem('crm_col_vis', JSON.stringify(visibleColumns));
+  }, [columnOrder, visibleColumns]);
 
   // 2. Fetch Contacts for Active Folder
   useEffect(() => {
@@ -134,53 +160,90 @@ export default function ContactsDirectory() {
 
   async function handleDeleteFolder(folderId: string) {
     if (!confirm("⚠️ WARNING: This will delete this folder AND completely erase all contacts inside it. Proceed?")) return;
-
     const { error } = await supabase.from('folders').delete().eq('id', folderId);
     if (error) {
       toast.error("Failed to delete folder");
       return;
     }
-
     toast.success("Folder and contacts permanently deleted.");
     setFolders(prev => prev.filter(f => f.id !== folderId));
   }
 
+  // Handle Bulk Contact Selection
+  const toggleSelectAll = () => {
+    if (selectedContacts.size === contacts.length) setSelectedContacts(new Set());
+    else setSelectedContacts(new Set(contacts.map(c => c.id)));
+  };
+
+  const toggleSelectRow = (id: string) => {
+    const next = new Set(selectedContacts);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedContacts(next);
+  };
+
+  async function handleBulkDelete() {
+    if (!confirm(`Are you sure you want to delete ${selectedContacts.size} contacts? This cannot be undone.`)) return;
+    const idsToDelete = Array.from(selectedContacts);
+
+    const { error } = await supabase.from('contacts').delete().in('id', idsToDelete);
+    if (error) toast.error("Failed to delete contacts.");
+    else {
+      toast.success(`${idsToDelete.length} contacts deleted.`);
+      setContacts(prev => prev.filter(c => !selectedContacts.has(c.id)));
+      setSelectedContacts(new Set());
+    }
+  }
+
+  // Editing Contacts logic (Now includes custom fields!)
   function handleEditClick(contact: Contact) {
     setEditForm({
       name: contact.name || '',
       phone: contact.phone || '',
       email: contact.email || '',
-      company: contact.company || ''
+      company: contact.company || '',
+      custom_values: { ...(contact.custom_values || {}) }
     });
     setEditingContact(contact);
   }
 
   async function saveContactEdit() {
     if (!editingContact) return;
-    const { error } = await supabase
+
+    // 1. Update Base Fields
+    const { error: baseError } = await supabase
       .from('contacts')
-      .update({
-        name: editForm.name,
-        phone: editForm.phone,
-        email: editForm.email,
-        company: editForm.company
-      })
+      .update({ name: editForm.name, phone: editForm.phone, email: editForm.email, company: editForm.company })
       .eq('id', editingContact.id);
 
-    if (error) {
-      toast.error("Failed to update contact");
-    } else {
-      toast.success("Contact updated!");
-      setContacts(prev => prev.map(c => c.id === editingContact.id ? { ...c, ...editForm } : c));
-      setEditingContact(null);
+    if (baseError) {
+      toast.error("Failed to update contact base info.");
+      return;
     }
+
+    // 2. Update Custom Fields 
+    const customValuesArray = Object.entries(editForm.custom_values).map(([id, val]) => ({
+      contact_id: editingContact.id,
+      custom_field_id: id,
+      value: val
+    }));
+
+    if (customValuesArray.length > 0) {
+      const { error: customError } = await supabase
+        .from('contact_custom_values')
+        .upsert(customValuesArray, { onConflict: 'contact_id, custom_field_id' });
+
+      if (customError) toast.error("Some custom fields failed to save.");
+    }
+
+    toast.success("Contact updated!");
+    setContacts(prev => prev.map(c => c.id === editingContact.id ? { ...c, ...editForm } : c));
+    setEditingContact(null);
   }
 
-  // --- DRAG AND DROP LOGIC ---
+  // --- DRAG, DROP, AND RESIZE LOGIC ---
 
-  const handleDragStart = (e: React.DragEvent, colId: string) => {
-    e.dataTransfer.setData('text/plain', colId);
-  };
+  const handleDragStart = (e: React.DragEvent, colId: string) => e.dataTransfer.setData('text/plain', colId);
 
   const handleDrop = (e: React.DragEvent, targetColId: string) => {
     e.preventDefault();
@@ -190,10 +253,19 @@ export default function ContactsDirectory() {
     const newOrder = [...columnOrder];
     const srcIdx = newOrder.indexOf(sourceColId);
     const tgtIdx = newOrder.indexOf(targetColId);
-
     newOrder.splice(srcIdx, 1);
     newOrder.splice(tgtIdx, 0, sourceColId);
     setColumnOrder(newOrder);
+  };
+
+  // Captures the new width immediately after you drag the column line
+  const handleColumnResize = (colId: string, e: React.MouseEvent<HTMLTableCellElement>) => {
+    const newWidth = e.currentTarget.offsetWidth;
+    setColumnWidths(prev => {
+      const next = { ...prev, [colId]: newWidth };
+      localStorage.setItem('crm_col_widths', JSON.stringify(next));
+      return next;
+    });
   };
 
   function getColumnLabel(colId: string) {
@@ -201,17 +273,19 @@ export default function ContactsDirectory() {
     return customFields.find(cf => cf.id === colId)?.field_name || colId;
   }
 
+  // Render cell contents wrapped natively!
   function renderCellContent(contact: Contact, col: string) {
+    const baseClasses = "block whitespace-normal break-words leading-relaxed py-1";
     switch (col) {
-      case 'name': return <span className="text-white font-medium">{contact.name || '-'}</span>;
-      case 'phone': return <span className="text-slate-300 font-mono">{contact.phone}</span>;
-      case 'email': return <span className="text-slate-400">{contact.email || '-'}</span>;
-      case 'company': return <span className="text-slate-400">{contact.company || '-'}</span>;
-      default: return <span className="text-slate-400 truncate block max-w-[200px]">{contact.custom_values?.[col] || '-'}</span>;
+      case 'name': return <span className={`text-white font-medium ${baseClasses}`}>{contact.name || '-'}</span>;
+      case 'phone': return <span className={`text-slate-300 font-mono ${baseClasses}`}>{contact.phone}</span>;
+      case 'email': return <span className={`text-slate-400 ${baseClasses}`}>{contact.email || '-'}</span>;
+      case 'company': return <span className={`text-slate-400 ${baseClasses}`}>{contact.company || '-'}</span>;
+      default: return <span className={`text-slate-400 ${baseClasses}`}>{contact.custom_values?.[col] || '-'}</span>;
     }
   }
 
-  // --- RENDER ---
+  // --- RENDER BLOCK ---
 
   if (!activeFolder) {
     return (
@@ -221,7 +295,6 @@ export default function ContactsDirectory() {
             <h1 className="text-2xl font-bold text-white">Contact Folders</h1>
             <p className="text-slate-400 text-sm">Select a directory to view your imported groups.</p>
           </div>
-          {/* THE MISSING IMPORT BUTTON IS BACK! */}
           <Button onClick={() => setIsImportOpen(true)} className="bg-primary hover:bg-primary/90 text-white">
             <Upload className="size-4 mr-2" /> Import CSV
           </Button>
@@ -262,12 +335,7 @@ export default function ContactsDirectory() {
           </div>
         )}
 
-        {/* Modal Mount */}
-        <ImportModal
-          open={isImportOpen}
-          onOpenChange={setIsImportOpen}
-          onImported={() => window.location.reload()}
-        />
+        <ImportModal open={isImportOpen} onOpenChange={setIsImportOpen} onImported={() => window.location.reload()} />
       </div>
     );
   }
@@ -291,6 +359,13 @@ export default function ContactsDirectory() {
         </div>
 
         <div className="flex items-center gap-3 relative">
+          {/* Show Mass Action Delete Button if Contacts are selected */}
+          {selectedContacts.size > 0 && (
+            <Button variant="destructive" onClick={handleBulkDelete} className="bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white border border-red-500/30">
+              <Trash2 className="size-4 mr-2" /> Delete ({selectedContacts.size})
+            </Button>
+          )}
+
           <div className="relative">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <Input placeholder="Search..." className="w-64 pl-9 bg-slate-950 border-slate-700 text-sm" />
@@ -327,14 +402,31 @@ export default function ContactsDirectory() {
           </div>
         ) : (
           <div className="flex-1 overflow-auto scrollbar-thin w-full">
-            <table className="w-full text-sm text-left whitespace-nowrap min-w-max border-collapse">
+            {/* Table layout set to fixed to force accurate resizing and wrapping */}
+            <table className="w-full text-sm text-left table-fixed border-collapse min-w-[800px]">
               <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10">
                 <tr>
+                  {/* Select All Checkbox Header */}
+                  <th className="px-4 py-3 border-r border-slate-800/50 w-[50px] shrink-0 align-top">
+                    <input
+                      type="checkbox"
+                      onChange={toggleSelectAll}
+                      checked={selectedContacts.size === contacts.length && contacts.length > 0}
+                      className="rounded border-slate-600 bg-slate-900 text-primary cursor-pointer mt-1"
+                    />
+                  </th>
+
                   {visibleOrderedCols.map(col => (
                     <th
                       key={col}
-                      className="px-2 py-3 border-r border-slate-800/50 last:border-r-0 hover:bg-slate-900 transition-colors"
-                      style={{ resize: 'horizontal', overflow: 'hidden', minWidth: '150px' }}
+                      onMouseUp={(e) => handleColumnResize(col, e)}
+                      className="px-2 py-3 border-r border-slate-800/50 hover:bg-slate-800 transition-colors align-top group relative"
+                      style={{
+                        resize: 'horizontal',
+                        overflow: 'hidden',
+                        width: columnWidths[col] || 200,
+                        minWidth: 100
+                      }}
                     >
                       <div
                         draggable
@@ -353,11 +445,26 @@ export default function ContactsDirectory() {
               </thead>
               <tbody className="divide-y divide-slate-800/50">
                 {contacts.map((contact) => (
-                  <tr key={contact.id} className="hover:bg-slate-800/40 transition-colors group">
+                  <tr key={contact.id} className={`transition-colors group ${selectedContacts.has(contact.id) ? 'bg-primary/5' : 'hover:bg-slate-800/40'}`}>
+
+                    {/* Select Row Checkbox */}
+                    <td className="px-4 py-3 border-r border-slate-800/50 align-top">
+                      <input
+                        type="checkbox"
+                        checked={selectedContacts.has(contact.id)}
+                        onChange={() => toggleSelectRow(contact.id)}
+                        className="rounded border-slate-600 bg-slate-900 text-primary cursor-pointer mt-1"
+                      />
+                    </td>
+
+                    {/* Data Cells (Now Wrap Properly!) */}
                     {visibleOrderedCols.map(col => (
-                      <td key={col} className="px-4 py-3">{renderCellContent(contact, col)}</td>
+                      <td key={col} className="px-4 py-3 border-r border-slate-800/50 align-top overflow-hidden max-w-0">
+                        {renderCellContent(contact, col)}
+                      </td>
                     ))}
-                    <td className="px-4 py-3 text-right sticky right-0 bg-slate-900 group-hover:bg-slate-800/40 border-l border-slate-800/50">
+
+                    <td className="px-4 py-3 text-right sticky right-0 bg-slate-900 group-hover:bg-slate-800/40 border-l border-slate-800/50 align-top">
                       <Button variant="ghost" size="icon" onClick={() => handleEditClick(contact)} className="size-8 text-slate-400 hover:text-primary hover:bg-primary/10">
                         <Edit className="size-4" />
                       </Button>
@@ -370,16 +477,34 @@ export default function ContactsDirectory() {
         )}
       </div>
 
+      {/* Upgraded Edit Contact Modal */}
       <Dialog open={!!editingContact} onOpenChange={(open) => !open && setEditingContact(null)}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader><DialogTitle>Edit Contact Details</DialogTitle></DialogHeader>
-          <div className="space-y-4 py-4">
+
+          <div className="space-y-4 py-4 overflow-y-auto scrollbar-thin px-1">
             <div className="space-y-2"><Label>Name</Label><Input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
             <div className="space-y-2"><Label>Phone</Label><Input value={editForm.phone} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
             <div className="space-y-2"><Label>Email</Label><Input value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
             <div className="space-y-2"><Label>Company</Label><Input value={editForm.company} onChange={e => setEditForm({ ...editForm, company: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+
+            {/* Dynamic Custom Fields Rendering in the Form! */}
+            {customFields.length > 0 && <div className="border-t border-slate-800 my-4 pt-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Custom Fields</div>}
+
+            {customFields.map(cf => (
+              <div key={cf.id} className="space-y-2">
+                <Label>{cf.field_name}</Label>
+                <textarea
+                  value={editForm.custom_values[cf.id] || ''}
+                  onChange={e => setEditForm(prev => ({ ...prev, custom_values: { ...prev.custom_values, [cf.id]: e.target.value } }))}
+                  className="w-full min-h-[80px] bg-slate-950 border border-slate-700 rounded-md p-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none resize-y"
+                  placeholder={`Enter ${cf.field_name.toLowerCase()}...`}
+                />
+              </div>
+            ))}
           </div>
-          <DialogFooter>
+
+          <DialogFooter className="pt-2">
             <Button variant="outline" onClick={() => setEditingContact(null)} className="border-slate-700 text-slate-300 hover:bg-slate-800">Cancel</Button>
             <Button onClick={saveContactEdit} className="bg-primary hover:bg-primary/90 text-white">Save Changes</Button>
           </DialogFooter>
