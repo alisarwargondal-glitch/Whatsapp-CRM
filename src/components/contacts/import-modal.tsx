@@ -385,9 +385,18 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       }
     } catch (err: unknown) {
       console.error("CRITICAL IMPORT ERROR DETECTED:", err);
-      // This will show you exactly what column, constraint, or table is broken:
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(`Import Error: ${message}`, { duration: 10000 });
+
+      // FIX: Stringify the entire object structure so it cannot hide behind [object Object]
+      let message = 'Unknown error';
+      if (err instanceof Error) {
+        message = err.message;
+      } else if (err && typeof err === 'object') {
+        message = JSON.stringify(err);
+      } else {
+        message = String(err);
+      }
+
+      toast.error(`Import Error Details: ${message}`, { duration: 15000 });
     } finally {
       setImporting(false);
     }
