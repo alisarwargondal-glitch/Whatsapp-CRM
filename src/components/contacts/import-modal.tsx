@@ -252,7 +252,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
-        // User ID is safely passed to satisfy the Tags constraint
         const { data: newTag, error: tagErr } = await supabase
           .from('tags')
           .insert({
@@ -341,7 +340,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             }
           } else {
 
-            // FIX: Removed phone_normalized from payload so database auto-generates it cleanly!
             const contactPayload: Record<string, any> = {
               user_id: user.id,
               account_id: accountId,
@@ -350,11 +348,26 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
               email: row.email || null,
             };
 
-            const { data: newContact, error: contactErr } = await supabase
+            // Attempt 1: Standard Insert (Assumes DB handles normalization automatically)
+            let insertAttempt = await supabase
               .from('contacts')
               .insert(contactPayload)
               .select('id')
               .maybeSingle();
+
+            // Attempt 2: DYNAMIC SCHEMA FALLBACK
+            // If the database complains about a missing phone_normalized value, it means the column was altered to NOT NULL and we must provide it manually
+            if (insertAttempt.error && insertAttempt.error.code === '23502' && insertAttempt.error.message.includes('phone_normalized')) {
+              contactPayload.phone_normalized = normalizedPhone;
+              insertAttempt = await supabase.from('contacts').insert(contactPayload).select('id').maybeSingle();
+            }
+            // Attempt 3: If it complains about a non-DEFAULT value, it is strictly generated and must be removed
+            else if (insertAttempt.error && insertAttempt.error.message.includes('non-DEFAULT')) {
+              delete contactPayload.phone_normalized;
+              insertAttempt = await supabase.from('contacts').insert(contactPayload).select('id').maybeSingle();
+            }
+
+            const { data: newContact, error: contactErr } = insertAttempt;
 
             if (contactErr) {
               if (contactErr.code === '23505' || contactErr.message?.includes('unique')) {
