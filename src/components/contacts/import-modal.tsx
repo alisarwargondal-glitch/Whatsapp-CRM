@@ -280,60 +280,71 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
       const { data: existingRows } = await supabase
         .from('contacts')
-        .select('id, phone_normalized')
+        .select('id, phone, phone_normalized')
         .eq('account_id', accountId);
 
       const existingPhoneMap = new Map<string, string>();
       existingRows?.forEach(r => {
         if (r.phone_normalized) existingPhoneMap.set(r.phone_normalized, r.id);
+        if (r.phone) existingPhoneMap.set(normalizeKey(r.phone), r.id);
       });
 
       for (const row of unique) {
-        const normalizedPhone = normalizeKey(row.phone);
-        let contactId = existingPhoneMap.get(normalizedPhone);
+        // Wrap loops inside isolated try/catch processing frames to prevent list crashes
+        try {
+          const normalizedPhone = normalizeKey(row.phone);
+          let contactId = existingPhoneMap.get(normalizedPhone);
 
-        if (contactId) {
-          skipped++;
-          const { data: existingLink } = await supabase
-            .from('contact_tags')
-            .select('contact_id')
-            .eq('contact_id', contactId)
-            .eq('tag_id', targetTagId)
-            .maybeSingle();
+          if (contactId) {
+            skipped++;
+            const { data: existingLink } = await supabase
+              .from('contact_tags')
+              .select('contact_id')
+              .eq('contact_id', contactId)
+              .eq('tag_id', targetTagId)
+              .maybeSingle();
 
-          if (!existingLink) {
-            await supabase.from('contact_tags').insert({
-              contact_id: contactId,
-              tag_id: targetTagId
-            });
-          }
-        } else {
-          // Safe contact payload object structure
-          const contactPayload: Record<string, any> = {
-            user_id: user.id,
-            account_id: accountId,
-            phone: row.phone,
-            name: row.name || null,
-            email: row.email || null,
-          };
-
-          const { data, error } = await supabase
-            .from('contacts')
-            .insert(contactPayload)
-            .select('id')
-            .maybeSingle();
-
-          if (!error && data?.id) {
-            imported++;
-            contactId = data.id;
-            await insertContactCustomFields(contactId, row.customFieldsMap);
-            await supabase.from('contact_tags').insert({
-              contact_id: contactId,
-              tag_id: targetTagId
-            });
+            if (!existingLink) {
+              await supabase.from('contact_tags').insert({
+                contact_id: contactId,
+                tag_id: targetTagId
+              });
+            }
           } else {
-            failed++;
+            const contactPayload: Record<string, any> = {
+              user_id: user.id,
+              account_id: accountId,
+              phone: row.phone,
+              name: row.name || null,
+              email: row.email || null,
+            };
+
+            const { data, error } = await supabase
+              .from('contacts')
+              .insert(contactPayload)
+              .select('id')
+              .maybeSingle();
+
+            // Treat runtime unique schema violations as duplicates dynamically rather than crashing
+            if (error && (error.code === '23505' || error.message?.includes('unique'))) {
+              skipped++;
+              continue;
+            }
+
+            if (!error && data?.id) {
+              imported++;
+              contactId = data.id;
+              await insertContactCustomFields(contactId, row.customFieldsMap);
+              await supabase.from('contact_tags').insert({
+                contact_id: contactId,
+                tag_id: targetTagId
+              });
+            } else {
+              failed++;
+            }
           }
+        } catch (innerErr) {
+          failed++;
         }
       }
 
