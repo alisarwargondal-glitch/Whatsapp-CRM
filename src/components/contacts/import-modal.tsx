@@ -35,13 +35,38 @@ interface ParsedRow {
   customFieldsMap?: Record<string, string>;
 }
 
+/**
+ * Parses a standard CSV line accurately, respecting comma boundaries inside quotation marks.
+ */
+function parseCSVLine(line: string): string[] {
+  const fields: string[] = [];
+  let currentField = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      inQuotes = !inQuotes; // Toggle quote state
+    } else if (char === ',' && !inQuotes) {
+      fields.push(currentField.trim());
+      currentField = '';
+    } else {
+      currentField += char;
+    }
+  }
+  fields.push(currentField.trim());
+  return fields;
+}
+
 function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[] {
-  const lines = text.trim().split(/\r?\n/);
+  const lines = text.split(/\r?\n/);
   if (lines.length < 2) return [];
 
-  const headerLine = lines[0];
-  const headers = headerLine.split(',').map((h) =>
-    h.trim().toLowerCase().replace(/["']/g, '').replace(/[^a-z0-9]/g, '')
+  // Parse headers safely using the quote-aware engine
+  const rawHeaders = parseCSVLine(lines[0]);
+  const headers = rawHeaders.map((h) =>
+    h.toLowerCase().replace(/["']/g, '').replace(/[^a-z0-9]/g, '')
   );
 
   const phoneIdx = headers.indexOf('phone');
@@ -51,39 +76,28 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
 
-  const customFieldMappings = dynamicCustomFields.map(cf => {
+  // Match custom CRM variables dynamically to column indices
+  const customFieldMappings = dynamicCustomFields.map((cf) => {
     const normalizedCrmName = cf.field_name.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
     return {
       id: cf.id,
-      index: headers.indexOf(normalizedCrmName)
+      index: headers.indexOf(normalizedCrmName),
     };
-  }).filter(m => m.index >= 0);
+  }).filter((m) => m.index >= 0);
 
   const rows: ParsedRow[] = [];
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
 
-    const values: string[] = [];
-    let current = '';
-    let inQuotes = false;
-    for (const char of line) {
-      if (char === '"') {
-        inQuotes = !inQuotes;
-      } else if (char === ',' && !inQuotes) {
-        values.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    values.push(current.trim());
+    // Parse each line respecting quotes to keep strict alignment
+    const values = parseCSVLine(line);
 
     const phone = values[phoneIdx]?.replace(/["']/g, '').trim();
     if (!phone) continue;
 
     const customFieldsMap: Record<string, string> = {};
-    customFieldMappings.forEach(m => {
+    customFieldMappings.forEach((m) => {
       const val = values[m.index]?.replace(/["']/g, '').trim();
       if (val) customFieldsMap[m.id] = val;
     });
@@ -93,7 +107,7 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
       name: nameIdx >= 0 ? values[nameIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
       email: emailIdx >= 0 ? values[emailIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
       company: companyIdx >= 0 ? values[companyIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
-      customFieldsMap
+      customFieldsMap,
     });
   }
 
@@ -160,7 +174,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     const childRows = Object.entries(customMap).map(([fieldId, value]) => ({
       contact_id: contactId,
       custom_field_id: fieldId,
-      value: value
+      value: value,
     }));
 
     await supabase.from('contact_custom_values').insert(childRows);
@@ -295,8 +309,10 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                       <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Phone</th>
                       <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Name</th>
                       <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Email</th>
-                      {dbCustomFields.map(cf => (
-                        <th key={cf.id} className="px-3 py-1.5 text-left text-amber-400 font-medium uppercase">{cf.field_name}</th>
+                      {dbCustomFields.map((cf) => (
+                        <th key={cf.id} className="px-3 py-1.5 text-left text-amber-400 font-medium uppercase">
+                          {cf.field_name}
+                        </th>
                       ))}
                     </tr>
                   </thead>
@@ -306,7 +322,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                         <td className="px-3 py-1.5 text-slate-300">{row.phone}</td>
                         <td className="px-3 py-1.5 text-slate-300">{row.name || '-'}</td>
                         <td className="px-3 py-1.5 text-slate-300">{row.email || '-'}</td>
-                        {dbCustomFields.map(cf => (
+                        {dbCustomFields.map((cf) => (
                           <td key={cf.id} className="px-3 py-1.5 text-slate-400 font-mono">
                             {row.customFieldsMap?.[cf.id] || '-'}
                           </td>
