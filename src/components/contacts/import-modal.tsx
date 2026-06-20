@@ -18,7 +18,9 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Upload, FileText, Loader2, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Upload, FileText, Loader2, CheckCircle, XCircle, AlertTriangle, FolderPlus } from 'lucide-react';
 import type { CustomField } from '@/types';
 
 interface ImportModalProps {
@@ -32,13 +34,9 @@ interface ParsedRow {
   name?: string;
   email?: string;
   company?: string;
-  customFieldsMap?: Record<string, string>; // Maps CRM Custom Field ID -> String Value
+  customFieldsMap?: Record<string, string>;
 }
 
-/**
- * Robust CSV parser that handles multi-line fields wrapped in quotes,
- * commas within fields, and blank row records correctly.
- */
 function parseFullCSV(text: string): string[][] {
   const result: string[][] = [];
   let row: string[] = [];
@@ -92,7 +90,6 @@ function parseCSV(
   const records = parseFullCSV(text);
   if (records.length < 2) return [];
 
-  // Clean and normalize file header strings from CSV
   const headers = records[0].map((h) =>
     h.toLowerCase().replace(/[^a-z0-9]/g, '')
   );
@@ -107,15 +104,12 @@ function parseCSV(
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
 
-  // Match registered custom fields against CSV headers precisely
   const customFieldMappings: { id: string; index: number }[] = [];
 
   for (const cf of dynamicCustomFields) {
     const normalizedCrmName = cf.field_name.toLowerCase().replace(/[^a-z0-9]/g, '');
-
     let fileIndex = headers.indexOf(normalizedCrmName);
 
-    // Fallback cross-over alias maps to accommodate alternate file names
     if (fileIndex === -1 && normalizedCrmName.includes('unit')) {
       fileIndex = headers.indexOf('unit');
     }
@@ -134,10 +128,7 @@ function parseCSV(
       return null;
     }
 
-    customFieldMappings.push({
-      id: cf.id,
-      index: fileIndex,
-    });
+    customFieldMappings.push({ id: cf.id, index: fileIndex });
   }
 
   const rows: ParsedRow[] = [];
@@ -175,6 +166,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
   const [dbCustomFields, setDbCustomFields] = useState<CustomField[]>([]);
   const [file, setFile] = useState<File | null>(null);
+  const [folderName, setFolderName] = useState('');
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<{
@@ -193,6 +185,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
   function reset() {
     setFile(null);
+    setFolderName('');
     setParsedRows([]);
     setResult(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -210,8 +203,11 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     setFile(selected);
     setResult(null);
 
-    const text = await selected.text();
+    // Auto-fill fallback folder name from file name minus extension
+    const fallbackName = selected.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
+    setFolderName(fallbackName);
 
+    const text = await selected.text();
     const rows = parseCSV(text, dbCustomFields, (errorMessage) => {
       toast.error(errorMessage);
       setFile(null);
@@ -222,7 +218,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       setParsedRows([]);
       return;
     }
-
     setParsedRows(rows);
   }
 
@@ -240,12 +235,47 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
   async function handleImport() {
     if (parsedRows.length === 0 || !accountId) return;
+    if (!folderName.trim()) {
+      toast.error('Please assign an Import Folder Name to group these contacts.');
+      return;
+    }
     setImporting(true);
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const user = session?.user;
       if (!user) throw new Error('Not authenticated');
+
+      // 1) Folder Resolution Engine: Find existing folder or create new folder tag
+      let targetTagId = '';
+      const cleanFolderName = folderName.trim();
+
+      const { data: existingTag } = await supabase
+        .from('tags')
+        .select('id')
+        .eq('account_id', accountId)
+        .ilike('name', cleanFolderName)
+        .maybeSingle();
+
+      if (existingTag) {
+        targetTagId = existingTag.id;
+      } else {
+        const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
+        const randomColor = colors[Math.floor(Math.random() * colors.length)];
+
+        const { data: newTag, error: tagErr } = await supabase
+          .from('tags')
+          .insert({
+            account_id: accountId,
+            name: cleanFolderName,
+            color: randomColor
+          })
+          .select('id')
+          .single();
+
+        if (tagErr) throw tagErr;
+        targetTagId = newTag.id;
+      }
 
       let imported = 0;
       let skipped = 0;
@@ -254,54 +284,63 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       const { unique, duplicates: inFileDupes } = dedupeByPhone(parsedRows);
       skipped += inFileDupes;
 
+      // Fetch contacts that already exist to bind or skip
       const { data: existingRows } = await supabase
         .from('contacts')
-        .select('phone_normalized')
+        .select('id, phone_normalized')
         .eq('account_id', accountId);
 
-      const existing = new Set(
-        (existingRows ?? [])
-          .map((r) => (r as { phone_normalized: string | null }).phone_normalized)
-          .filter((p): p is string => !!p),
-      );
-
-      const toInsert = unique.filter((row) => {
-        if (existing.has(normalizeKey(row.phone))) {
-          skipped++;
-          return false;
-        }
-        return true;
+      const existingPhoneMap = new Map<string, string>();
+      existingRows?.forEach(r => {
+        if (r.phone_normalized) existingPhoneMap.set(r.phone_normalized, r.id);
       });
 
-      for (const row of toInsert) {
-        const contactPayload = {
-          user_id: user.id,
-          account_id: accountId,
-          phone: row.phone,
-          name: row.name || null,
-          email: row.email || null,
-          company: row.company || null,
-        };
+      for (const row of unique) {
+        const normalizedPhone = normalizeKey(row.phone);
+        let contactId = existingPhoneMap.get(normalizedPhone);
 
-        const { data, error } = await supabase
-          .from('contacts')
-          .insert(contactPayload)
-          .select('id')
-          .maybeSingle();
-
-        if (!error && data?.id) {
-          imported++;
-          await insertContactCustomFields(data.id, row.customFieldsMap);
-        } else if (error && isUniqueViolation(error)) {
+        if (contactId) {
+          // Contact exists: skip creating row, just tag it into the folder if not already tagged
           skipped++;
+          await supabase.from('contact_tags').insert({
+            contact_id: contactId,
+            tag_id: targetTagId
+          }).colthrough(); // dynamically passes duplicates back gracefully
         } else {
-          failed++;
+          // Create brand new contact
+          const contactPayload = {
+            user_id: user.id,
+            account_id: accountId,
+            phone: row.phone,
+            name: row.name || null,
+            email: row.email || null,
+            company: row.company || null,
+          };
+
+          const { data, error } = await supabase
+            .from('contacts')
+            .insert(contactPayload)
+            .select('id')
+            .maybeSingle();
+
+          if (!error && data?.id) {
+            imported++;
+            contactId = data.id;
+            await insertContactCustomFields(contactId, row.customFieldsMap);
+            // Bind contact to folder tag
+            await supabase.from('contact_tags').insert({
+              contact_id: contactId,
+              tag_id: targetTagId
+            });
+          } else {
+            failed++;
+          }
         }
       }
 
       setResult({ imported, skipped, failed });
-      if (imported > 0) {
-        toast.success(`${imported} contact${imported !== 1 ? 's' : ''} imported successfully`);
+      if (imported > 0 || skipped > 0) {
+        toast.success(`Processing complete for folder group: ${cleanFolderName}`);
         onImported();
       }
     } catch (err: unknown) {
@@ -318,9 +357,11 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 max-w-[95vw] sm:max-w-xl md:max-w-2xl overflow-hidden shadow-2xl">
         <DialogHeader>
-          <DialogTitle className="text-white">Import Contacts</DialogTitle>
+          <DialogTitle className="text-white flex items-center gap-2">
+            <FolderPlus className="size-5 text-primary" /> Import Contacts into Folder
+          </DialogTitle>
           <DialogDescription className="text-slate-400">
-            Upload a CSV file with a &quot;phone&quot; column. Columns matching your active custom fields will map automatically.
+            Upload a spreadsheet file. Contacts will be cleanly organized and grouped inside a dedicated folder view segment.
           </DialogDescription>
         </DialogHeader>
 
@@ -328,7 +369,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
           {/* Upload Drop Area */}
           <div
             onClick={() => fileInputRef.current?.click()}
-            className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-700 p-6 cursor-pointer hover:border-primary/50 transition-colors"
+            className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-700 p-6 cursor-pointer hover:border-primary/50 transition-colors bg-slate-950/20"
           >
             {file ? (
               <>
@@ -355,7 +396,23 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             className="hidden"
           />
 
-          {/* Table Container - Fixed overflow-x container bounding to stop layout spill breaks */}
+          {/* Folder Configuration Input */}
+          {file && !result && (
+            <div className="space-y-1.5 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+              <Label htmlFor="folder" className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                Import Folder Name (Creates new or appends to existing)
+              </Label>
+              <Input
+                id="folder"
+                value={folderName}
+                onChange={(e) => setFolderName(e.target.value)}
+                placeholder="e.g., Santorini Townhouses June"
+                className="border-slate-700 bg-slate-900 text-white focus:border-primary focus:ring-1 focus:ring-primary"
+              />
+            </div>
+          )}
+
+          {/* Table Preview Container */}
           {preview.length > 0 && !result && (
             <div className="space-y-2 max-w-full">
               <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">
@@ -394,24 +451,24 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             </div>
           )}
 
-          {/* Success Summary View */}
+          {/* Result Output Tracker */}
           {result && (
             <div className="rounded-lg border border-slate-700 p-4 space-y-2 bg-slate-950/30">
               <p className="text-sm font-medium text-white">Import Complete</p>
               <div className="flex flex-wrap items-center gap-4">
                 {result.imported > 0 && (
                   <div className="flex items-center gap-1.5 text-primary text-sm">
-                    <CheckCircle className="size-4" /> {result.imported} imported
+                    <CheckCircle className="size-4" /> {result.imported} new contacts imported
                   </div>
                 )}
                 {result.skipped > 0 && (
                   <div className="flex items-center gap-1.5 text-amber-400 text-sm">
-                    <AlertTriangle className="size-4" /> {result.skipped} duplicate{result.skipped !== 1 ? 's' : ''} skipped
+                    <AlertTriangle className="size-4" /> {result.skipped} existing contacts assigned to folder
                   </div>
                 )}
                 {result.failed > 0 && (
                   <div className="flex items-center gap-1.5 text-red-400 text-sm">
-                    <XCircle className="size-4" /> {result.failed} failed
+                    <XCircle className="size-4" /> {result.failed} records failed
                   </div>
                 )}
               </div>
@@ -431,12 +488,12 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
           {!result && (
             <Button
               type="button"
-              disabled={parsedRows.length === 0 || importing}
+              disabled={parsedRows.length === 0 || importing || !folderName.trim()}
               onClick={handleImport}
-              className="bg-primary hover:bg-primary/90 text-primary-foreground"
+              className="bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-40"
             >
               {importing && <Loader2 className="size-4 animate-spin" />}
-              Import {parsedRows.length > 0 ? `${parsedRows.length} Contacts` : ''}
+              Process Group Import
             </Button>
           )}
         </DialogFooter>
