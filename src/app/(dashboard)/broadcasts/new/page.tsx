@@ -46,8 +46,6 @@ export default function NewBroadcastPage() {
     Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>
   >({});
   const [name, setName] = useState('');
-
-  // Track selected variation globally across wizard transitions
   const [selectedVariationIdx, setSelectedVariationIdx] = useState<number>(0);
 
   async function handleSend() {
@@ -58,7 +56,6 @@ export default function NewBroadcastPage() {
         name,
         template: {
           ...template,
-          // Explicitly substitute the chosen text variation body string before sending to backend
           body_text: template.text_variations?.[selectedVariationIdx] || template.body_text
         },
         audience: {
@@ -128,7 +125,6 @@ export default function NewBroadcastPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-8">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-white">New Broadcast</h1>
         <p className="mt-1 text-sm text-slate-400">
@@ -136,7 +132,6 @@ export default function NewBroadcastPage() {
         </p>
       </div>
 
-      {/* Step Indicator */}
       <div className="flex items-center justify-between">
         {steps.map((step, index) => {
           const isActive = index === currentStep;
@@ -147,10 +142,10 @@ export default function NewBroadcastPage() {
               <div className="flex items-center gap-2">
                 <div
                   className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-medium transition-all ${isCompleted
-                      ? 'bg-primary text-primary-foreground'
-                      : isActive
-                        ? 'border-2 border-primary bg-primary/10 text-primary'
-                        : 'border border-slate-700 bg-slate-800 text-slate-500'
+                    ? 'bg-primary text-primary-foreground'
+                    : isActive
+                      ? 'border-2 border-primary bg-primary/10 text-primary'
+                      : 'border border-slate-700 bg-slate-800 text-slate-500'
                     }`}
                 >
                   {isCompleted ? <Check className="h-4 w-4" /> : index + 1}
@@ -173,7 +168,6 @@ export default function NewBroadcastPage() {
         })}
       </div>
 
-      {/* Step Content */}
       <div className="relative min-h-[400px]">
         <div
           className="transition-all duration-300 ease-in-out"
@@ -187,7 +181,7 @@ export default function NewBroadcastPage() {
               selectedTemplate={template}
               onSelect={(t) => {
                 setTemplate(t);
-                setSelectedVariationIdx(0); // reset tracking index on fresh picking
+                setSelectedVariationIdx(0);
               }}
               onNext={() => setCurrentStep(1)}
               onBack={() => router.push('/broadcasts')}
@@ -205,14 +199,12 @@ export default function NewBroadcastPage() {
             <Step3Personalize
               template={{
                 ...template,
-                // Ensure the preview content syncs cleanly with what we've chosen
                 body_text: template.text_variations?.[selectedVariationIdx] || template.body_text
               }}
               variables={variables}
               onUpdate={setVariables}
               onNext={() => setCurrentStep(3)}
               onBack={() => setCurrentStep(1)}
-              // Pass downstream selectors cleanly
               selectedVariationIdx={selectedVariationIdx}
               onVariationChange={setSelectedVariationIdx}
             />

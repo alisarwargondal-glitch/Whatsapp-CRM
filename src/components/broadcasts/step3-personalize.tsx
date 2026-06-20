@@ -15,7 +15,6 @@ import {
 } from '@/components/ui/select';
 import { ArrowLeft, ArrowRight, Eye, Loader2 } from 'lucide-react';
 
-// Extended message template interface to safely support text variations inside the broadcast loop
 interface MessageTemplateWithVariations extends MessageTemplate {
   text_variations?: string[];
 }
@@ -33,6 +32,8 @@ interface Step3Props {
   onUpdate: (variables: Record<string, VariableMapping>) => void;
   onNext: () => void;
   onBack: () => void;
+  selectedVariationIdx: number;
+  onVariationChange: (index: number) => void;
 }
 
 const contactFields = [
@@ -60,6 +61,8 @@ export function Step3Personalize({
   onUpdate,
   onNext,
   onBack,
+  selectedVariationIdx,
+  onVariationChange,
 }: Step3Props) {
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [loadingFields, setLoadingFields] = useState(true);
@@ -69,10 +72,6 @@ export function Step3Personalize({
   >(new Map());
   const [loadingPreview, setLoadingPreview] = useState(true);
 
-  // Track selected text variation index locally
-  const [selectedVariationIdx, setSelectedVariationIdx] = useState<number>(0);
-
-  // Load user's custom fields + a representative contact for live preview
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -114,25 +113,11 @@ export function Step3Personalize({
     };
   }, []);
 
-  // Dynamically resolve the active text body based on variation selection
-  const activeBodyText = useMemo(() => {
-    if (template.text_variations && template.text_variations.length > 0) {
-      return template.text_variations[selectedVariationIdx] || template.body_text;
-    }
-    return template.body_text;
-  }, [template, selectedVariationIdx]);
-
-  // Extract variables dynamically from whichever text variation copy is active
   const placeholders = useMemo(() => {
-    const matches = activeBodyText.match(/\{\{(\d+)\}\}/g);
+    const matches = template.body_text.match(/\{\{(\d+)\}\}/g);
     if (!matches) return [];
     return [...new Set(matches)].sort();
-  }, [activeBodyText]);
-
-  // Reset variables dictionary whenever variation swaps changes variable count
-  useEffect(() => {
-    onUpdate({});
-  }, [selectedVariationIdx]);
+  }, [template.body_text]);
 
   const unmappedKeys = useMemo(() => {
     const missing: string[] = [];
@@ -160,7 +145,7 @@ export function Step3Personalize({
       ? firstContactCustomValues
       : new Map<string, string>();
 
-    let text = activeBodyText;
+    let text = template.body_text;
     for (const placeholder of placeholders) {
       const key = placeholder.replace(/^\{\{|\}\}$/g, '');
       const mapping = variables[key];
@@ -185,7 +170,7 @@ export function Step3Personalize({
     }
     return text;
   }, [
-    activeBodyText,
+    template.body_text,
     variables,
     placeholders,
     firstContact,
@@ -205,18 +190,17 @@ export function Step3Personalize({
         </p>
       </div>
 
-      {/* Variation Selector Interface */}
       {template.text_variations && template.text_variations.length > 1 && (
         <div className="space-y-1.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
           <Label className="text-xs font-semibold text-amber-400">Select Template Text Variation</Label>
           <select
             value={selectedVariationIdx}
-            onChange={(e) => setSelectedVariationIdx(Number(e.target.value))}
+            onChange={(e) => onVariationChange(Number(e.target.value))}
             className="w-full rounded-md border border-slate-700 bg-slate-800 p-2 text-sm text-white focus:border-primary focus:outline-none"
           >
             {template.text_variations.map((_, index) => (
               <option key={index} value={index}>
-                Variation #{index + 1} {index === 0 ? "(Primary Structure)" : ""}
+                Variation #{index + 1} {index === 0 ? "(Primary)" : ""}
               </option>
             ))}
           </select>
@@ -364,16 +348,12 @@ export function Step3Personalize({
           <span className="font-mono font-semibold">
             {unmappedKeys.join(', ')}
           </span>
-          . Otherwise those placeholders will ship to Meta as empty strings.
+          .
         </div>
       )}
 
       <div className="flex items-center justify-between border-t border-slate-800 pt-4">
-        <Button
-          variant="outline"
-          onClick={onBack}
-          className="border-slate-700 text-slate-300"
-        >
+        <Button variant="outline" onClick={onBack} className="border-slate-700 text-slate-300">
           <ArrowLeft className="h-4 w-4" />
           Back
         </Button>
