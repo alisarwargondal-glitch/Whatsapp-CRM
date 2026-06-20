@@ -203,7 +203,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     setFile(selected);
     setResult(null);
 
-    // Auto-fill fallback folder name from file name minus extension
     const fallbackName = selected.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
     setFolderName(fallbackName);
 
@@ -246,7 +245,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       const user = session?.user;
       if (!user) throw new Error('Not authenticated');
 
-      // 1) Folder Resolution Engine: Find existing folder or create new folder tag
       let targetTagId = '';
       const cleanFolderName = folderName.trim();
 
@@ -284,7 +282,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       const { unique, duplicates: inFileDupes } = dedupeByPhone(parsedRows);
       skipped += inFileDupes;
 
-      // Fetch contacts that already exist to bind or skip
       const { data: existingRows } = await supabase
         .from('contacts')
         .select('id, phone_normalized')
@@ -300,14 +297,22 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         let contactId = existingPhoneMap.get(normalizedPhone);
 
         if (contactId) {
-          // Contact exists: skip creating row, just tag it into the folder if not already tagged
           skipped++;
-          await supabase.from('contact_tags').insert({
-            contact_id: contactId,
-            tag_id: targetTagId
-          }).colthrough(); // dynamically passes duplicates back gracefully
+          // Safe handling for duplicates: check if relationship tag link already exists first
+          const { data: existingLink } = await supabase
+            .from('contact_tags')
+            .select('contact_id')
+            .eq('contact_id', contactId)
+            .eq('tag_id', targetTagId)
+            .maybeSingle();
+
+          if (!existingLink) {
+            await supabase.from('contact_tags').insert({
+              contact_id: contactId,
+              tag_id: targetTagId
+            });
+          }
         } else {
-          // Create brand new contact
           const contactPayload = {
             user_id: user.id,
             account_id: accountId,
@@ -327,7 +332,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             imported++;
             contactId = data.id;
             await insertContactCustomFields(contactId, row.customFieldsMap);
-            // Bind contact to folder tag
             await supabase.from('contact_tags').insert({
               contact_id: contactId,
               tag_id: targetTagId
@@ -366,7 +370,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         </DialogHeader>
 
         <div className="space-y-4 max-w-full overflow-hidden">
-          {/* Upload Drop Area */}
           <div
             onClick={() => fileInputRef.current?.click()}
             className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-700 p-6 cursor-pointer hover:border-primary/50 transition-colors bg-slate-950/20"
@@ -396,7 +399,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             className="hidden"
           />
 
-          {/* Folder Configuration Input */}
           {file && !result && (
             <div className="space-y-1.5 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
               <Label htmlFor="folder" className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
@@ -412,7 +414,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             </div>
           )}
 
-          {/* Table Preview Container */}
           {preview.length > 0 && !result && (
             <div className="space-y-2 max-w-full">
               <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">
@@ -451,7 +452,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             </div>
           )}
 
-          {/* Result Output Tracker */}
           {result && (
             <div className="rounded-lg border border-slate-700 p-4 space-y-2 bg-slate-950/30">
               <p className="text-sm font-medium text-white">Import Complete</p>
