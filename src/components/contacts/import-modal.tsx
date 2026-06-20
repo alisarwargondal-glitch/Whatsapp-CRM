@@ -51,11 +51,9 @@ function parseFullCSV(text: string): string[][] {
 
     if (char === '"') {
       if (inQuotes && nextChar === '"') {
-        // Escaped quote inside a quoted value
         currentField += '"';
-        i++; // skip next quote
+        i++;
       } else {
-        // Toggle quote block state
         inQuotes = !inQuotes;
       }
     } else if (char === ',' && !inQuotes) {
@@ -63,10 +61,9 @@ function parseFullCSV(text: string): string[][] {
       currentField = '';
     } else if ((char === '\r' || char === '\n') && !inQuotes) {
       if (char === '\r' && nextChar === '\n') {
-        i++; // skip combined \n window
+        i++;
       }
       row.push(currentField.trim());
-      // Only push non-empty rows
       if (row.length > 1 || row[0] !== '') {
         result.push(row);
       }
@@ -77,7 +74,6 @@ function parseFullCSV(text: string): string[][] {
     }
   }
 
-  // Handle final lingering field/row safely
   if (currentField !== '' || row.length > 0) {
     row.push(currentField.trim());
     if (row.length > 1 || row[0] !== '') {
@@ -88,7 +84,11 @@ function parseFullCSV(text: string): string[][] {
   return result;
 }
 
-function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[] {
+function parseCSV(
+  text: string,
+  dynamicCustomFields: CustomField[],
+  onError: (msg: string) => void
+): ParsedRow[] | null {
   const records = parseFullCSV(text);
   if (records.length < 2) return [];
 
@@ -98,24 +98,29 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
   );
 
   const phoneIdx = headers.indexOf('phone');
-  if (phoneIdx === -1) return [];
+  if (phoneIdx === -1) {
+    onError('No valid rows found. Ensure CSV has a "phone" column header.');
+    return null;
+  }
 
   const nameIdx = headers.indexOf('name');
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
 
-  // Hardcoded fuzzy alias translation matrix mapping spreadsheet keys to your specific custom fields
-  const customFieldMappings = dynamicCustomFields.map((cf) => {
+  const customFieldMappings: { id: string; index: number }[] = [];
+
+  // Strict Validation: Check every registered custom field against CSV headers
+  for (const cf of dynamicCustomFields) {
     const normalizedCrmName = cf.field_name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
     let fileIndex = headers.indexOf(normalizedCrmName);
 
-    // Explicit cross-over fallbacks if the naming conventions differ
+    // Fallback cross-over alias matches to handle common variants
     if (fileIndex === -1 && normalizedCrmName.includes('unit')) {
-      fileIndex = headers.indexOf('unit'); // Maps custom field 'Unit No.' to csv column 'unit'
+      fileIndex = headers.indexOf('unit');
     }
     if (fileIndex === -1 && (normalizedCrmName.includes('comment') || normalizedCrmName.includes('view'))) {
-      fileIndex = headers.indexOf('view'); // Maps custom field 'Comments' to csv column 'view'
+      fileIndex = headers.indexOf('view');
     }
     if (fileIndex === -1 && normalizedCrmName.includes('cluster')) {
       fileIndex = headers.indexOf('cluster');
@@ -124,11 +129,17 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
       fileIndex = headers.indexOf('bedrooms');
     }
 
-    return {
+    // Throw explicit error immediately if a custom field cannot be found or matched in the CSV column set
+    if (fileIndex === -1) {
+      onError(`Validation Error: The CRM custom field "${cf.field_name}" does not match any column name in the uploaded CSV.`);
+      return null;
+    }
+
+    customFieldMappings.push({
       id: cf.id,
       index: fileIndex,
-    };
-  }).filter((m) => m.index >= 0);
+    });
+  }
 
   const rows: ParsedRow[] = [];
   for (let i = 1; i < records.length; i++) {
@@ -199,10 +210,14 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     setResult(null);
 
     const text = await selected.text();
-    const rows = parseCSV(text, dbCustomFields);
 
-    if (rows.length === 0) {
-      toast.error('No valid rows found. Ensure CSV has a "phone" column header.');
+    const rows = parseCSV(text, dbCustomFields, (errorMessage) => {
+      toast.error(errorMessage);
+      setFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    });
+
+    if (rows === null) {
       setParsedRows([]);
       return;
     }
