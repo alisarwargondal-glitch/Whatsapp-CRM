@@ -12,23 +12,21 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'WhatsApp CRM',
-  description: 'Manage client communications and real estate metrics seamlessly',
-  manifest: '/manifest.json', // <-- Adds the PWA install metadata linkage line
-};
-
-description: "Self-hostable WhatsApp CRM.",
+  title: "WhatsApp CRM",
+  description: "Self-hostable WhatsApp CRM.",
+  manifest: "/manifest.json", // <-- The comma here keeps things perfectly structured!
   robots: {
-  index: false,
+    index: false,
     follow: false,
   },
-icons: {
-  icon: [{ url: "/icon" }],
+},
+  icons: {
+    icon: [{ url: "/icon" }],
   },
-formatDetection: {
-  email: false,
+  formatDetection: {
+    email: false,
     address: false,
-      telephone: false,
+    telephone: false,
   },
 };
 
