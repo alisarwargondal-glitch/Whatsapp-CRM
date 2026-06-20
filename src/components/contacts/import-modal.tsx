@@ -5,7 +5,6 @@ import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import {
   dedupeByPhone,
-  isUniqueViolation,
   normalizeKey,
 } from '@/lib/contacts/dedupe';
 import { toast } from 'sonner';
@@ -123,12 +122,9 @@ function parseCSV(
       fileIndex = headers.indexOf('bedrooms');
     }
 
-    if (fileIndex === -1) {
-      onError(`Validation Error: The CRM custom field "${cf.field_name}" does not match any column name in the uploaded CSV.`);
-      return null;
+    if (fileIndex !== -1) {
+      customFieldMappings.push({ id: cf.id, index: fileIndex });
     }
-
-    customFieldMappings.push({ id: cf.id, index: fileIndex });
   }
 
   const rows: ParsedRow[] = [];
@@ -136,22 +132,23 @@ function parseCSV(
     const values = records[i];
     if (values.length === 0 || values.length <= phoneIdx) continue;
 
-    const phone = values[phoneIdx].trim();
+    // Aggressively clear string formatting artifacts and invisible breaks
+    const phone = values[phoneIdx].trim().replace(/[\s\t\r\n]/g, '');
     if (!phone) continue;
 
     const customFieldsMap: Record<string, string> = {};
     customFieldMappings.forEach((m) => {
       const val = values[m.index];
       if (val && val !== '-') {
-        customFieldsMap[m.id] = val;
+        customFieldsMap[m.id] = val.trim();
       }
     });
 
     rows.push({
       phone,
-      name: nameIdx >= 0 ? values[nameIdx] || undefined : undefined,
-      email: emailIdx >= 0 ? values[emailIdx] || undefined : undefined,
-      company: companyIdx >= 0 ? values[companyIdx] || undefined : undefined,
+      name: nameIdx >= 0 ? values[nameIdx]?.trim() || undefined : undefined,
+      email: emailIdx >= 0 ? values[emailIdx]?.trim() || undefined : undefined,
+      company: companyIdx >= 0 ? values[companyIdx]?.trim() || undefined : undefined,
       customFieldsMap,
     });
   }
@@ -355,6 +352,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
   }
 
   const preview = parsedRows.slice(0, 5);
+  const headers = parsedRows.length > 0 ? Object.keys(parsedRows[0]) : [];
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -425,11 +423,14 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                       <th className="px-3 py-2 text-left text-slate-400 font-medium w-[130px]">Phone</th>
                       <th className="px-3 py-2 text-left text-slate-400 font-medium w-[120px]">Name</th>
                       <th className="px-3 py-2 text-left text-slate-400 font-medium w-[140px]">Email</th>
-                      {dbCustomFields.map((cf) => (
-                        <th key={cf.id} className="px-3 py-2 text-left text-amber-400 font-medium uppercase w-[120px] truncate">
-                          {cf.field_name}
-                        </th>
-                      ))}
+                      {dbCustomFields.map((cf) => {
+                        const normalizedCrmName = cf.field_name.toLowerCase().replace(/[^a-z0-9]/g, '');
+                        return (
+                          <th key={cf.id} className="px-3 py-2 text-left text-amber-400 font-medium uppercase w-[120px] truncate">
+                            {cf.field_name}
+                          </th>
+                        );
+                      })}
                     </tr>
                   </thead>
                   <tbody>
