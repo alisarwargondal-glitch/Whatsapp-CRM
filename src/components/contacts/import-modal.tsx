@@ -32,7 +32,7 @@ interface ParsedRow {
   name?: string;
   email?: string;
   company?: string;
-  customFieldsMap?: Record<string, string>;
+  customFieldsMap?: Record<string, string>; // Maps CRM Custom Field ID -> String Value
 }
 
 /**
@@ -92,7 +92,7 @@ function parseCSV(
   const records = parseFullCSV(text);
   if (records.length < 2) return [];
 
-  // Clean and normalize file header strings
+  // Clean and normalize file header strings from CSV
   const headers = records[0].map((h) =>
     h.toLowerCase().replace(/[^a-z0-9]/g, '')
   );
@@ -107,19 +107,19 @@ function parseCSV(
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
 
+  // Match registered custom fields against CSV headers precisely
   const customFieldMappings: { id: string; index: number }[] = [];
 
-  // Strict Validation: Check every registered custom field against CSV headers
   for (const cf of dynamicCustomFields) {
     const normalizedCrmName = cf.field_name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
     let fileIndex = headers.indexOf(normalizedCrmName);
 
-    // Fallback cross-over alias matches to handle common variants
+    // Fallback cross-over alias maps to accommodate alternate file names
     if (fileIndex === -1 && normalizedCrmName.includes('unit')) {
       fileIndex = headers.indexOf('unit');
     }
-    if (fileIndex === -1 && (normalizedCrmName.includes('comment') || normalizedCrmName.includes('view'))) {
+    if (fileIndex === -1 && (normalizedCrmName.includes('comment') || normalizedCrmName.includes('view') || normalizedCrmName.includes('remark'))) {
       fileIndex = headers.indexOf('view');
     }
     if (fileIndex === -1 && normalizedCrmName.includes('cluster')) {
@@ -129,7 +129,6 @@ function parseCSV(
       fileIndex = headers.indexOf('bedrooms');
     }
 
-    // Throw explicit error immediately if a custom field cannot be found or matched in the CSV column set
     if (fileIndex === -1) {
       onError(`Validation Error: The CRM custom field "${cf.field_name}" does not match any column name in the uploaded CSV.`);
       return null;
@@ -144,7 +143,7 @@ function parseCSV(
   const rows: ParsedRow[] = [];
   for (let i = 1; i < records.length; i++) {
     const values = records[i];
-    if (values.length === 0 || !values[phoneIdx]) continue;
+    if (values.length === 0 || values.length <= phoneIdx) continue;
 
     const phone = values[phoneIdx].trim();
     if (!phone) continue;
@@ -152,7 +151,9 @@ function parseCSV(
     const customFieldsMap: Record<string, string> = {};
     customFieldMappings.forEach((m) => {
       const val = values[m.index];
-      if (val && val !== '-') customFieldsMap[m.id] = val;
+      if (val && val !== '-') {
+        customFieldsMap[m.id] = val;
+      }
     });
 
     rows.push({
@@ -185,7 +186,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
   useEffect(() => {
     if (!open) return;
     (async () => {
-      const { data } = await supabase.from('custom_fields').select('*');
+      const { data } = await supabase.from('custom_fields').select('*').order('field_name');
       setDbCustomFields(data || []);
     })();
   }, [open, supabase]);
@@ -315,7 +316,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 sm:max-w-lg">
+      <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 max-w-[95vw] sm:max-w-xl md:max-w-2xl overflow-hidden shadow-2xl">
         <DialogHeader>
           <DialogTitle className="text-white">Import Contacts</DialogTitle>
           <DialogDescription className="text-slate-400">
@@ -323,7 +324,8 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-4 max-w-full overflow-hidden">
+          {/* Upload Drop Area */}
           <div
             onClick={() => fileInputRef.current?.click()}
             className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-700 p-6 cursor-pointer hover:border-primary/50 transition-colors"
@@ -331,7 +333,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             {file ? (
               <>
                 <FileText className="size-8 text-primary" />
-                <p className="text-sm text-slate-300">{file.name}</p>
+                <p className="text-sm text-slate-300 truncate max-w-full px-2">{file.name}</p>
                 <p className="text-xs text-slate-500">
                   {parsedRows.length} row{parsedRows.length !== 1 ? 's' : ''} detected
                 </p>
@@ -353,20 +355,21 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             className="hidden"
           />
 
+          {/* Table Container - Fixed overflow-x container bounding to stop layout spill breaks */}
           {preview.length > 0 && !result && (
-            <div className="space-y-2">
+            <div className="space-y-2 max-w-full">
               <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                 Preview (first {preview.length} rows)
               </p>
-              <div className="rounded-lg border border-slate-700 overflow-hidden overflow-x-auto">
-                <table className="w-full text-xs">
+              <div className="rounded-lg border border-slate-700 w-full overflow-x-auto bg-slate-950/50 scrollbar-thin">
+                <table className="w-full text-xs min-w-[600px] table-fixed">
                   <thead>
-                    <tr className="bg-slate-800">
-                      <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Phone</th>
-                      <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Name</th>
-                      <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Email</th>
+                    <tr className="bg-slate-800 border-b border-slate-700">
+                      <th className="px-3 py-2 text-left text-slate-400 font-medium w-[130px]">Phone</th>
+                      <th className="px-3 py-2 text-left text-slate-400 font-medium w-[120px]">Name</th>
+                      <th className="px-3 py-2 text-left text-slate-400 font-medium w-[140px]">Email</th>
                       {dbCustomFields.map((cf) => (
-                        <th key={cf.id} className="px-3 py-1.5 text-left text-amber-400 font-medium uppercase">
+                        <th key={cf.id} className="px-3 py-2 text-left text-amber-400 font-medium uppercase w-[120px] truncate">
                           {cf.field_name}
                         </th>
                       ))}
@@ -374,12 +377,12 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                   </thead>
                   <tbody>
                     {preview.map((row, i) => (
-                      <tr key={i} className="border-t border-slate-700/50">
-                        <td className="px-3 py-1.5 text-slate-300">{row.phone}</td>
-                        <td className="px-3 py-1.5 text-slate-300">{row.name || '-'}</td>
-                        <td className="px-3 py-1.5 text-slate-300">{row.email || '-'}</td>
+                      <tr key={i} className="border-t border-slate-800 hover:bg-slate-900/30">
+                        <td className="px-3 py-2 text-slate-300 font-mono truncate">{row.phone}</td>
+                        <td className="px-3 py-2 text-slate-300 truncate">{row.name || '-'}</td>
+                        <td className="px-3 py-2 text-slate-300 truncate">{row.email || '-'}</td>
                         {dbCustomFields.map((cf) => (
-                          <td key={cf.id} className="px-3 py-1.5 text-slate-400 font-mono max-w-[150px] truncate">
+                          <td key={cf.id} className="px-3 py-2 text-slate-400 font-mono truncate max-w-[150px]">
                             {row.customFieldsMap?.[cf.id] || '-'}
                           </td>
                         ))}
@@ -391,8 +394,9 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             </div>
           )}
 
+          {/* Success Summary View */}
           {result && (
-            <div className="rounded-lg border border-slate-700 p-4 space-y-2">
+            <div className="rounded-lg border border-slate-700 p-4 space-y-2 bg-slate-950/30">
               <p className="text-sm font-medium text-white">Import Complete</p>
               <div className="flex flex-wrap items-center gap-4">
                 {result.imported > 0 && (
@@ -415,7 +419,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
           )}
         </div>
 
-        <DialogFooter className="bg-slate-900 border-slate-700">
+        <DialogFooter className="bg-slate-900 border-t border-slate-800/60 pt-3">
           <Button
             type="button"
             variant="outline"
