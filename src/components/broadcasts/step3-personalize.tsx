@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { Contact, CustomField, MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
@@ -14,6 +15,11 @@ import {
 } from '@/components/ui/select';
 import { ArrowLeft, ArrowRight, Eye, Loader2 } from 'lucide-react';
 
+// Extended message template interface to safely support text variations inside the broadcast loop
+interface MessageTemplateWithVariations extends MessageTemplate {
+  text_variations?: string[];
+}
+
 type VariableType = 'static' | 'field' | 'custom_field';
 
 interface VariableMapping {
@@ -22,7 +28,7 @@ interface VariableMapping {
 }
 
 interface Step3Props {
-  template: MessageTemplate;
+  template: MessageTemplateWithVariations;
   variables: Record<string, VariableMapping>;
   onUpdate: (variables: Record<string, VariableMapping>) => void;
   onNext: () => void;
@@ -63,8 +69,10 @@ export function Step3Personalize({
   >(new Map());
   const [loadingPreview, setLoadingPreview] = useState(true);
 
-  // Load user's custom fields + a representative contact for the
-  // live preview. Fall back to sample data if no contacts exist yet.
+  // Track selected text variation index locally
+  const [selectedVariationIdx, setSelectedVariationIdx] = useState<number>(0);
+
+  // Load user's custom fields + a representative contact for live preview
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -106,18 +114,26 @@ export function Step3Personalize({
     };
   }, []);
 
+  // Dynamically resolve the active text body based on variation selection
+  const activeBodyText = useMemo(() => {
+    if (template.text_variations && template.text_variations.length > 0) {
+      return template.text_variations[selectedVariationIdx] || template.body_text;
+    }
+    return template.body_text;
+  }, [template, selectedVariationIdx]);
+
+  // Extract variables dynamically from whichever text variation copy is active
   const placeholders = useMemo(() => {
-    const matches = template.body_text.match(/\{\{(\d+)\}\}/g);
+    const matches = activeBodyText.match(/\{\{(\d+)\}\}/g);
     if (!matches) return [];
     return [...new Set(matches)].sort();
-  }, [template.body_text]);
+  }, [activeBodyText]);
 
-  /**
-   * A placeholder is "unmapped" if the user hasn't picked either a
-   * static value or a field/custom-field source. Blocks Next until
-   * every placeholder has something — otherwise the broadcast would
-   * ship with empty strings and confuse recipients.
-   */
+  // Reset variables dictionary whenever variation swaps changes variable count
+  useEffect(() => {
+    onUpdate({});
+  }, [selectedVariationIdx]);
+
   const unmappedKeys = useMemo(() => {
     const missing: string[] = [];
     for (const placeholder of placeholders) {
@@ -138,17 +154,13 @@ export function Step3Personalize({
     });
   }
 
-  /**
-   * Substitute placeholders using the first real contact where
-   * possible. Placeholders keyed by "{{N}}" map to variable key "N".
-   */
   const previewText = useMemo(() => {
     const contact = firstContact ?? SAMPLE_CONTACT;
     const customValues = firstContact
       ? firstContactCustomValues
       : new Map<string, string>();
 
-    let text = template.body_text;
+    let text = activeBodyText;
     for (const placeholder of placeholders) {
       const key = placeholder.replace(/^\{\{|\}\}$/g, '');
       const mapping = variables[key];
@@ -173,7 +185,7 @@ export function Step3Personalize({
     }
     return text;
   }, [
-    template.body_text,
+    activeBodyText,
     variables,
     placeholders,
     firstContact,
@@ -189,10 +201,27 @@ export function Step3Personalize({
       <div>
         <h2 className="text-lg font-semibold text-white">Personalize Message</h2>
         <p className="mt-1 text-sm text-slate-400">
-          Map template variables to contact fields, custom fields, or static
-          values.
+          Map template variables to contact fields, custom fields, or static values.
         </p>
       </div>
+
+      {/* Variation Selector Interface */}
+      {template.text_variations && template.text_variations.length > 1 && (
+        <div className="space-y-1.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <Label className="text-xs font-semibold text-amber-400">Select Template Text Variation</Label>
+          <select
+            value={selectedVariationIdx}
+            onChange={(e) => setSelectedVariationIdx(Number(e.target.value))}
+            className="w-full rounded-md border border-slate-700 bg-slate-800 p-2 text-sm text-white focus:border-primary focus:outline-none"
+          >
+            {template.text_variations.map((_, index) => (
+              <option key={index} value={index}>
+                Variation #{index + 1} {index === 0 ? "(Primary Structure)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {placeholders.length === 0 ? (
         <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-6 text-center">
@@ -310,8 +339,7 @@ export function Step3Personalize({
         </div>
       )}
 
-      {/* Live Preview — rendered as a WhatsApp-style bubble so the user
-          sees approximately what the recipient will see. */}
+      {/* Live Preview */}
       <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
         <div className="mb-3 flex items-center gap-2">
           <Eye className="h-4 w-4 text-primary" />
