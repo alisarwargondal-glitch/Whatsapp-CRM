@@ -36,37 +36,65 @@ interface ParsedRow {
 }
 
 /**
- * Parses a standard CSV line accurately, respecting comma boundaries inside quotation marks.
+ * Robust CSV parser that handles multi-line fields wrapped in quotes,
+ * commas within fields, and blank row records correctly.
  */
-function parseCSVLine(line: string): string[] {
-  const fields: string[] = [];
+function parseFullCSV(text: string): string[][] {
+  const result: string[][] = [];
+  let row: string[] = [];
   let currentField = '';
   let inQuotes = false;
 
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
 
     if (char === '"') {
-      inQuotes = !inQuotes; // Toggle quote state
+      if (inQuotes && nextChar === '"') {
+        // Escaped quote inside a quoted value
+        currentField += '"';
+        i++; // skip next quote
+      } else {
+        // Toggle quote block state
+        inQuotes = !inQuotes;
+      }
     } else if (char === ',' && !inQuotes) {
-      fields.push(currentField.trim());
+      row.push(currentField.trim());
+      currentField = '';
+    } else if ((char === '\r' || char === '\n') && !inQuotes) {
+      if (char === '\r' && nextChar === '\n') {
+        i++; // skip combined \n window
+      }
+      row.push(currentField.trim());
+      // Only push non-empty rows
+      if (row.length > 1 || row[0] !== '') {
+        result.push(row);
+      }
+      row = [];
       currentField = '';
     } else {
       currentField += char;
     }
   }
-  fields.push(currentField.trim());
-  return fields;
+
+  // Handle final lingering field/row safely
+  if (currentField !== '' || row.length > 0) {
+    row.push(currentField.trim());
+    if (row.length > 1 || row[0] !== '') {
+      result.push(row);
+    }
+  }
+
+  return result;
 }
 
 function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[] {
-  const lines = text.split(/\r?\n/);
-  if (lines.length < 2) return [];
+  const records = parseFullCSV(text);
+  if (records.length < 2) return [];
 
-  // Parse headers safely using the quote-aware engine
-  const rawHeaders = parseCSVLine(lines[0]);
-  const headers = rawHeaders.map((h) =>
-    h.toLowerCase().replace(/["']/g, '').replace(/[^a-z0-9]/g, '')
+  // Clean and normalize file header strings
+  const headers = records[0].map((h) =>
+    h.toLowerCase().replace(/[^a-z0-9]/g, '')
   );
 
   const phoneIdx = headers.indexOf('phone');
@@ -76,37 +104,51 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
 
-  // Match custom CRM variables dynamically to column indices
+  // Hardcoded fuzzy alias translation matrix mapping spreadsheet keys to your specific custom fields
   const customFieldMappings = dynamicCustomFields.map((cf) => {
-    const normalizedCrmName = cf.field_name.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+    const normalizedCrmName = cf.field_name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    let fileIndex = headers.indexOf(normalizedCrmName);
+
+    // Explicit cross-over fallbacks if the naming conventions differ
+    if (fileIndex === -1 && normalizedCrmName.includes('unit')) {
+      fileIndex = headers.indexOf('unit'); // Maps custom field 'Unit No.' to csv column 'unit'
+    }
+    if (fileIndex === -1 && (normalizedCrmName.includes('comment') || normalizedCrmName.includes('view'))) {
+      fileIndex = headers.indexOf('view'); // Maps custom field 'Comments' to csv column 'view'
+    }
+    if (fileIndex === -1 && normalizedCrmName.includes('cluster')) {
+      fileIndex = headers.indexOf('cluster');
+    }
+    if (fileIndex === -1 && normalizedCrmName.includes('bedroom')) {
+      fileIndex = headers.indexOf('bedrooms');
+    }
+
     return {
       id: cf.id,
-      index: headers.indexOf(normalizedCrmName),
+      index: fileIndex,
     };
   }).filter((m) => m.index >= 0);
 
   const rows: ParsedRow[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
+  for (let i = 1; i < records.length; i++) {
+    const values = records[i];
+    if (values.length === 0 || !values[phoneIdx]) continue;
 
-    // Parse each line respecting quotes to keep strict alignment
-    const values = parseCSVLine(line);
-
-    const phone = values[phoneIdx]?.replace(/["']/g, '').trim();
+    const phone = values[phoneIdx].trim();
     if (!phone) continue;
 
     const customFieldsMap: Record<string, string> = {};
     customFieldMappings.forEach((m) => {
-      const val = values[m.index]?.replace(/["']/g, '').trim();
-      if (val) customFieldsMap[m.id] = val;
+      const val = values[m.index];
+      if (val && val !== '-') customFieldsMap[m.id] = val;
     });
 
     rows.push({
       phone,
-      name: nameIdx >= 0 ? values[nameIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
-      email: emailIdx >= 0 ? values[emailIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
-      company: companyIdx >= 0 ? values[companyIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
+      name: nameIdx >= 0 ? values[nameIdx] || undefined : undefined,
+      email: emailIdx >= 0 ? values[emailIdx] || undefined : undefined,
+      company: companyIdx >= 0 ? values[companyIdx] || undefined : undefined,
       customFieldsMap,
     });
   }
@@ -181,8 +223,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
   }
 
   async function handleImport() {
-    if (parsedRows.length === 0) return;
-    if (!accountId) return;
+    if (parsedRows.length === 0 || !accountId) return;
     setImporting(true);
 
     try {
@@ -323,7 +364,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                         <td className="px-3 py-1.5 text-slate-300">{row.name || '-'}</td>
                         <td className="px-3 py-1.5 text-slate-300">{row.email || '-'}</td>
                         {dbCustomFields.map((cf) => (
-                          <td key={cf.id} className="px-3 py-1.5 text-slate-400 font-mono">
+                          <td key={cf.id} className="px-3 py-1.5 text-slate-400 font-mono max-w-[150px] truncate">
                             {row.customFieldsMap?.[cf.id] || '-'}
                           </td>
                         ))}
@@ -346,7 +387,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                 )}
                 {result.skipped > 0 && (
                   <div className="flex items-center gap-1.5 text-amber-400 text-sm">
-                    <AlertTriangle className="size-4" /> {result.skipped} skipped
+                    <AlertTriangle className="size-4" /> {result.skipped} duplicate{result.skipped !== 1 ? 's' : ''} skipped
                   </div>
                 )}
                 {result.failed > 0 && (
