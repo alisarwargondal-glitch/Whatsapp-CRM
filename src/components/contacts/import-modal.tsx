@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import {
@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Upload, FileText, Loader2, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import type { CustomField } from '@/types';
 
 interface ImportModalProps {
   open: boolean;
@@ -31,9 +32,11 @@ interface ParsedRow {
   name?: string;
   email?: string;
   company?: string;
+  // Hold any detected custom field matches as fieldId -> string value
+  customFieldsMap?: Record<string, string>;
 }
 
-function parseCSV(text: string): ParsedRow[] {
+function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[] {
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) return [];
 
@@ -47,12 +50,17 @@ function parseCSV(text: string): ParsedRow[] {
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
 
+  // Match existing columns to indices dynamically
+  const customFieldMappings = dynamicCustomFields.map(cf => ({
+    id: cf.id,
+    index: headers.indexOf(cf.field_name.toLowerCase().trim())
+  })).filter(m => m.index >= 0);
+
   const rows: ParsedRow[] = [];
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
 
-    // Simple CSV parse (handles quoted fields)
     const values: string[] = [];
     let current = '';
     let inQuotes = false;
@@ -71,12 +79,19 @@ function parseCSV(text: string): ParsedRow[] {
     const phone = values[phoneIdx]?.replace(/["']/g, '').trim();
     if (!phone) continue;
 
+    // Gather mapped dynamic metrics properties
+    const customFieldsMap: Record<string, string> = {};
+    customFieldMappings.forEach(m => {
+      const val = values[m.index]?.replace(/["']/g, '').trim();
+      if (val) customFieldsMap[m.id] = val;
+    });
+
     rows.push({
       phone,
       name: nameIdx >= 0 ? values[nameIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
       email: emailIdx >= 0 ? values[emailIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
-      company:
-        companyIdx >= 0 ? values[companyIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
+      company: companyIdx >= 0 ? values[companyIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
+      customFieldsMap
     });
   }
 
@@ -88,6 +103,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
   const { accountId } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [dbCustomFields, setDbCustomFields] = useState<CustomField[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [importing, setImporting] = useState(false);
@@ -96,6 +112,15 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     skipped: number;
     failed: number;
   } | null>(null);
+
+  // Fetch registered dynamic properties from DB metadata cache table
+  useEffect(() => {
+    if (!open) return;
+    (async () => {
+      const { data } = await supabase.from('custom_fields').select('*');
+      setDbCustomFields(data || []);
+    })();
+  }, [open, supabase]);
 
   function reset() {
     setFile(null);
@@ -117,7 +142,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     setResult(null);
 
     const text = await selected.text();
-    const rows = parseCSV(text);
+    const rows = parseCSV(text, dbCustomFields);
 
     if (rows.length === 0) {
       toast.error('No valid rows found. Ensure CSV has a "phone" column header.');
@@ -128,32 +153,41 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     setParsedRows(rows);
   }
 
+  // Handle transaction relational storage bindings cleanly
+  async function insertContactCustomFields(contactId: string, customMap?: Record<string, string>) {
+    if (!customMap || Object.keys(customMap).length === 0) return;
+
+    const childRows = Object.entries(customMap).map(([fieldId, value]) => ({
+      contact_id: contactId,
+      custom_field_id: fieldId,
+      value: value
+    }));
+
+    await supabase.from('contact_custom_values').insert(childRows);
+  }
+
   async function handleImport() {
     if (parsedRows.length === 0) return;
+    if (!accountId) return;
     setImporting(true);
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
       const user = session?.user;
       if (!user) throw new Error('Not authenticated');
-      if (!accountId) throw new Error('Your profile is not linked to an account.');
 
       let imported = 0;
       let skipped = 0;
       let failed = 0;
 
-      // 1) De-dupe within the file by normalized phone (keep first).
       const { unique, duplicates: inFileDupes } = dedupeByPhone(parsedRows);
       skipped += inFileDupes;
 
-      // 2) Skip numbers already in this account. One read of the
-      //    generated `phone_normalized` column (migration 022) → Set.
       const { data: existingRows } = await supabase
         .from('contacts')
         .select('phone_normalized')
         .eq('account_id', accountId);
+
       const existing = new Set(
         (existingRows ?? [])
           .map((r) => (r as { phone_normalized: string | null }).phone_normalized)
@@ -168,54 +202,37 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         return true;
       });
 
-      // 3) Batch insert the genuinely-new rows in chunks of 50. The DB
-      //    unique index is the backstop: a 23505 (race, or a format
-      //    that normalizes equal) counts as skipped, not failed.
-      const chunkSize = 50;
-      for (let i = 0; i < toInsert.length; i += chunkSize) {
-        const chunk = toInsert.slice(i, i + chunkSize);
-        const rows = chunk.map((row) => ({
+      // Insert records individually or split chunks to resolve unique ID returns sequentially
+      for (const row of toInsert) {
+        const contactPayload = {
           user_id: user.id,
           account_id: accountId,
           phone: row.phone,
           name: row.name || null,
           email: row.email || null,
           company: row.company || null,
-        }));
+        };
 
         const { data, error } = await supabase
           .from('contacts')
-          .insert(rows)
-          .select('id');
+          .insert(contactPayload)
+          .select('id')
+          .maybeSingle();
 
-        if (error) {
-          // Retry individually so one bad/duplicate row doesn't sink
-          // the whole chunk.
-          for (const row of rows) {
-            const { error: singleErr } = await supabase.from('contacts').insert(row);
-            if (!singleErr) {
-              imported++;
-            } else if (isUniqueViolation(singleErr)) {
-              skipped++;
-            } else {
-              failed++;
-            }
-          }
+        if (!error && data?.id) {
+          imported++;
+          await insertContactCustomFields(data.id, row.customFieldsMap);
+        } else if (error && isUniqueViolation(error)) {
+          skipped++;
         } else {
-          imported += data?.length ?? chunk.length;
+          failed++;
         }
       }
 
       setResult({ imported, skipped, failed });
       if (imported > 0) {
-        toast.success(`${imported} contact${imported !== 1 ? 's' : ''} imported`);
+        toast.success(`${imported} contact${imported !== 1 ? 's' : ''} imported successfully`);
         onImported();
-      }
-      if (skipped > 0) {
-        toast.info(`${skipped} duplicate${skipped !== 1 ? 's' : ''} skipped`);
-      }
-      if (failed > 0) {
-        toast.error(`${failed} contact${failed !== 1 ? 's' : ''} failed to import`);
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Import failed';
@@ -233,13 +250,11 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         <DialogHeader>
           <DialogTitle className="text-white">Import Contacts</DialogTitle>
           <DialogDescription className="text-slate-400">
-            Upload a CSV file with a &quot;phone&quot; column (required). Optional columns:
-            name, email, company.
+            Upload a CSV file with a &quot;phone&quot; column. Columns matching your active custom fields will map automatically.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Upload area */}
           <div
             onClick={() => fileInputRef.current?.click()}
             className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-700 p-6 cursor-pointer hover:border-primary/50 transition-colors"
@@ -255,12 +270,8 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             ) : (
               <>
                 <Upload className="size-8 text-slate-500" />
-                <p className="text-sm text-slate-400">
-                  Click to upload CSV file
-                </p>
-                <p className="text-xs text-slate-500">
-                  CSV with &quot;phone&quot; column required
-                </p>
+                <p className="text-sm text-slate-400">Click to upload CSV file</p>
+                <p className="text-xs text-slate-500">CSV with &quot;phone&quot; column header required</p>
               </>
             )}
           </div>
@@ -273,20 +284,21 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             className="hidden"
           />
 
-          {/* Preview table */}
           {preview.length > 0 && !result && (
             <div className="space-y-2">
               <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                 Preview (first {preview.length} rows)
               </p>
-              <div className="rounded-lg border border-slate-700 overflow-hidden">
+              <div className="rounded-lg border border-slate-700 overflow-hidden overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="bg-slate-800">
                       <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Phone</th>
                       <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Name</th>
                       <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Email</th>
-                      <th className="px-3 py-1.5 text-left text-slate-400 font-medium">Company</th>
+                      {dbCustomFields.map(cf => (
+                        <th key={cf.id} className="px-3 py-1.5 text-left text-amber-400 font-medium uppercase">{cf.field_name}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
@@ -295,41 +307,36 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                         <td className="px-3 py-1.5 text-slate-300">{row.phone}</td>
                         <td className="px-3 py-1.5 text-slate-300">{row.name || '-'}</td>
                         <td className="px-3 py-1.5 text-slate-300">{row.email || '-'}</td>
-                        <td className="px-3 py-1.5 text-slate-300">{row.company || '-'}</td>
+                        {dbCustomFields.map(cf => (
+                          <td key={cf.id} className="px-3 py-1.5 text-slate-400 font-mono">
+                            {row.customFieldsMap?.[cf.id] || '-'}
+                          </td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              {parsedRows.length > 5 && (
-                <p className="text-xs text-slate-500">
-                  ...and {parsedRows.length - 5} more rows
-                </p>
-              )}
             </div>
           )}
 
-          {/* Results */}
           {result && (
             <div className="rounded-lg border border-slate-700 p-4 space-y-2">
               <p className="text-sm font-medium text-white">Import Complete</p>
               <div className="flex flex-wrap items-center gap-4">
                 {result.imported > 0 && (
                   <div className="flex items-center gap-1.5 text-primary text-sm">
-                    <CheckCircle className="size-4" />
-                    {result.imported} imported
+                    <CheckCircle className="size-4" /> {result.imported} imported
                   </div>
                 )}
                 {result.skipped > 0 && (
                   <div className="flex items-center gap-1.5 text-amber-400 text-sm">
-                    <AlertTriangle className="size-4" />
-                    {result.skipped} duplicate{result.skipped !== 1 ? 's' : ''} skipped
+                    <AlertTriangle className="size-4" /> {result.skipped} skipped
                   </div>
                 )}
                 {result.failed > 0 && (
                   <div className="flex items-center gap-1.5 text-red-400 text-sm">
-                    <XCircle className="size-4" />
-                    {result.failed} failed
+                    <XCircle className="size-4" /> {result.failed} failed
                   </div>
                 )}
               </div>
