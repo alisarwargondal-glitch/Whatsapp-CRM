@@ -71,7 +71,7 @@ export default function ContactsDirectory() {
     setSelectedContacts(new Set());
   }, [activeFolder]);
 
-  // 1. Fetch Folders & Setup Memory State (FIXED: Missing Custom Fields)
+  // 1. Fetch Folders & Setup Memory State Safely
   useEffect(() => {
     if (!accountId) return;
     async function loadFolders() {
@@ -98,23 +98,22 @@ export default function ContactsDirectory() {
           newOrder.push(field.id);
         });
 
-        // Pull saved adjustments from Browser LocalStorage
+        // Pull saved adjustments from Browser LocalStorage safely!
         const savedOrder = localStorage.getItem('crm_col_order');
         const savedVis = localStorage.getItem('crm_col_vis');
         const savedWidths = localStorage.getItem('crm_col_widths');
 
         if (savedOrder) {
           const parsedOrder = JSON.parse(savedOrder);
-          // FIX: Intelligently merge the saved order but append any new custom fields that were missing
           const missingFields = newOrder.filter(col => !parsedOrder.includes(col));
-          newOrder = [...parsedOrder, ...missingFields];
+          newOrder = [...parsedOrder, ...missingFields]; // Safely merge new fields with saved order
         }
-
         if (savedVis) {
           newCols = { ...newCols, ...JSON.parse(savedVis) };
         }
-
-        if (savedWidths) setColumnWidths(JSON.parse(savedWidths));
+        if (savedWidths) {
+          setColumnWidths(JSON.parse(savedWidths));
+        }
 
         setVisibleColumns(newCols);
         setColumnOrder(newOrder);
@@ -125,11 +124,48 @@ export default function ContactsDirectory() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, supabase]);
 
-  // Save Column Adjustments to Memory whenever they change
+  // FIX: Robust ResizeObserver to perfectly track CSS Drag adjustments
   useEffect(() => {
-    if (columnOrder.length > 0) localStorage.setItem('crm_col_order', JSON.stringify(columnOrder));
-    if (Object.keys(visibleColumns).length > 0) localStorage.setItem('crm_col_vis', JSON.stringify(visibleColumns));
-  }, [columnOrder, visibleColumns]);
+    if (!activeFolder || contacts.length === 0) return;
+    const thElements = document.querySelectorAll('.resizable-th');
+    if (thElements.length === 0) return;
+
+    let timeoutId: NodeJS.Timeout;
+
+    const observer = new ResizeObserver((entries) => {
+      // Debounce saving to prevent spamming local storage while actively dragging
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        setColumnWidths(prev => {
+          const next = { ...prev };
+          let hasChanges = false;
+
+          entries.forEach(entry => {
+            const colId = entry.target.getAttribute('data-colid');
+            const newWidth = Math.round(entry.contentRect.width);
+
+            if (colId && next[colId] !== newWidth && newWidth > 150) {
+              next[colId] = newWidth;
+              hasChanges = true;
+            }
+          });
+
+          if (hasChanges) {
+            localStorage.setItem('crm_col_widths', JSON.stringify(next));
+            return next;
+          }
+          return prev;
+        });
+      }, 200);
+    });
+
+    thElements.forEach(th => observer.observe(th));
+
+    return () => {
+      observer.disconnect();
+      clearTimeout(timeoutId);
+    };
+  }, [activeFolder, contacts, columnOrder, visibleColumns]); // Re-attach when table renders
 
   // 2. Fetch Contacts for Active Folder
   useEffect(() => {
@@ -204,6 +240,15 @@ export default function ContactsDirectory() {
     }
   }
 
+  // Handle Explicit View Column Toggles
+  const handleToggleColumn = (colId: string) => {
+    setVisibleColumns(prev => {
+      const next = { ...prev, [colId]: !prev[colId] };
+      localStorage.setItem('crm_col_vis', JSON.stringify(next));
+      return next;
+    });
+  };
+
   // Editing Contacts logic (Now includes custom fields!)
   function handleEditClick(contact: Contact) {
     setEditForm({
@@ -262,26 +307,22 @@ export default function ContactsDirectory() {
     const tgtIdx = newOrder.indexOf(targetColId);
     newOrder.splice(srcIdx, 1);
     newOrder.splice(tgtIdx, 0, sourceColId);
+
     setColumnOrder(newOrder);
+    localStorage.setItem('crm_col_order', JSON.stringify(newOrder)); // Explicit Save
   };
 
-  const handleColumnResize = (colId: string, e: React.MouseEvent<HTMLTableCellElement>) => {
-    const newWidth = e.currentTarget.offsetWidth;
-    setColumnWidths(prev => {
-      const next = { ...prev, [colId]: newWidth };
-      localStorage.setItem('crm_col_widths', JSON.stringify(next));
-      return next;
-    });
-  };
-
-  // FIX: Double click perfectly auto-snaps the column back to content size
   const handleDoubleClickResize = (colId: string) => {
     setColumnWidths(prev => {
       const next = { ...prev };
-      delete next[colId]; // Deleting the saved width forces it to auto-size
+      delete next[colId]; // Deleting specific saved width forces Auto-Fit
       localStorage.setItem('crm_col_widths', JSON.stringify(next));
       return next;
     });
+
+    // Manually wipe the inline style applied by the browser to instantly snap it back
+    const th = document.querySelector(`th[data-colid="${colId}"]`) as HTMLElement;
+    if (th) th.style.width = 'auto';
   };
 
   function getColumnLabel(colId: string) {
@@ -290,7 +331,7 @@ export default function ContactsDirectory() {
   }
 
   function renderCellContent(contact: Contact, col: string) {
-    const baseClasses = "block whitespace-normal break-words leading-relaxed py-1 min-w-[120px]";
+    const baseClasses = "block whitespace-normal break-words leading-relaxed py-1 text-sm";
     switch (col) {
       case 'name': return <span className={`text-white font-medium ${baseClasses}`}>{contact.name || '-'}</span>;
       case 'phone': return <span className={`text-slate-300 font-mono ${baseClasses}`}>{contact.phone}</span>;
@@ -398,7 +439,7 @@ export default function ContactsDirectory() {
                   {/* Default Fields Group */}
                   {defaultCols.map(col => (
                     <label key={col} className="flex items-center gap-2 p-2 mx-1 hover:bg-slate-800 rounded cursor-pointer">
-                      <input type="checkbox" checked={visibleColumns[col] || false} onChange={() => setVisibleColumns(p => ({ ...p, [col]: !p[col] }))} className="rounded border-slate-600 text-primary focus:ring-primary bg-slate-900" />
+                      <input type="checkbox" checked={visibleColumns[col] || false} onChange={() => handleToggleColumn(col)} className="rounded border-slate-600 text-primary focus:ring-primary bg-slate-900" />
                       <span className="text-sm text-slate-300 truncate">{getColumnLabel(col)}</span>
                     </label>
                   ))}
@@ -407,7 +448,7 @@ export default function ContactsDirectory() {
                   {customCols.length > 0 && <div className="text-xs font-semibold text-slate-400 uppercase px-2 pt-2 pb-1 border-t border-slate-800 mt-1">Custom Fields</div>}
                   {customCols.map(col => (
                     <label key={col} className="flex items-center gap-2 p-2 mx-1 hover:bg-slate-800 rounded cursor-pointer">
-                      <input type="checkbox" checked={visibleColumns[col] || false} onChange={() => setVisibleColumns(p => ({ ...p, [col]: !p[col] }))} className="rounded border-slate-600 text-primary focus:ring-primary bg-slate-900" />
+                      <input type="checkbox" checked={visibleColumns[col] || false} onChange={() => handleToggleColumn(col)} className="rounded border-slate-600 text-primary focus:ring-primary bg-slate-900" />
                       <span className="text-sm text-slate-300 truncate">{getColumnLabel(col)}</span>
                     </label>
                   ))}
@@ -428,7 +469,7 @@ export default function ContactsDirectory() {
           </div>
         ) : (
           <div className="flex-1 overflow-auto scrollbar-thin w-full">
-            <table className="w-full text-sm text-left table-fixed border-collapse min-w-[800px]">
+            <table className="w-full text-left table-fixed border-collapse min-w-[800px]">
               <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10">
                 <tr>
                   <th className="px-4 py-3 border-r border-slate-800/50 w-[50px] shrink-0 align-top">
@@ -443,13 +484,13 @@ export default function ContactsDirectory() {
                   {visibleOrderedCols.map(col => (
                     <th
                       key={col}
-                      onMouseUp={(e) => handleColumnResize(col, e)}
-                      className="px-2 py-3 border-r border-slate-800/50 hover:bg-slate-800 transition-colors align-top group relative"
+                      data-colid={col}
+                      className="resizable-th px-2 py-3 border-r border-slate-800/50 hover:bg-slate-800 transition-colors align-top group relative"
                       style={{
                         resize: 'horizontal',
                         overflow: 'hidden',
-                        width: columnWidths[col] || 'auto', // Defaults to auto-fit
-                        minWidth: 150, // Anti-squish protection
+                        width: columnWidths[col] ? `${columnWidths[col]}px` : 'auto',
+                        minWidth: 150,
                         maxWidth: 800
                       }}
                     >
@@ -458,7 +499,7 @@ export default function ContactsDirectory() {
                         onDragStart={(e) => handleDragStart(e, col)}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => handleDrop(e, col)}
-                        onDoubleClick={() => handleDoubleClickResize(col)} // FIX: Double Click Auto-Size!
+                        onDoubleClick={() => handleDoubleClickResize(col)}
                         className="flex items-center gap-2 w-full h-full cursor-grab active:cursor-grabbing hover:text-white px-2"
                         title="Double-click to auto-size"
                       >
@@ -472,7 +513,7 @@ export default function ContactsDirectory() {
               </thead>
               <tbody className="divide-y divide-slate-800/50">
                 {contacts.map((contact) => (
-                  <tr key={contact.id} className={`transition-colors group ${selectedContacts.has(contact.id) ? 'bg-primary/5' : 'hover:bg-slate-800/40'}`}>
+                  <tr key={contact.id} className={`transition-colors group ${selectedContacts.has(contact.id) ? 'bg-primary/10' : 'hover:bg-slate-800/40'}`}>
                     <td className="px-4 py-3 border-r border-slate-800/50 align-top">
                       <input
                         type="checkbox"
