@@ -91,15 +91,20 @@ export default function ContactsDirectory() {
     tags: [] as string[]
   });
 
-  // Clear states when changing folders
+  // Load Saved Sort Settings Once On Mount
+  useEffect(() => {
+    const savedSort = localStorage.getItem('crm_sort_config');
+    if (savedSort) setSortConfig(JSON.parse(savedSort));
+  }, []);
+
+  // Clear transient states when changing folders (but NEVER the sort configs or widths)
   useEffect(() => {
     setSelectedContacts(new Set());
     setSearchQuery('');
     setTagFilter([]);
-    setSortConfig({ column: null, direction: null });
   }, [activeFolder]);
 
-  // 1. Fetch Initial Schema
+  // 1. Fetch Initial Schema & Restore Memory Configs
   useEffect(() => {
     if (!accountId) return;
     async function loadInitialData() {
@@ -123,6 +128,7 @@ export default function ContactsDirectory() {
           newOrder.push(field.id);
         });
 
+        // Restore Layout configs from Local Storage
         const savedOrder = localStorage.getItem('crm_col_order');
         const savedVis = localStorage.getItem('crm_col_vis');
         const savedWidths = localStorage.getItem('crm_col_widths');
@@ -167,7 +173,11 @@ export default function ContactsDirectory() {
         const customMap: Record<string, string> = {};
         cVals.forEach(cv => { customMap[cv.custom_field_id] = cv.value; });
 
-        const myTags = contactTagsData?.filter(ct => ct.contact_id === c.id).map(ct => ct.tags as unknown as TagItem).filter(Boolean) || [];
+        // Safely extract Tags (protects against object/array structural issues)
+        const myTags = contactTagsData
+          ?.filter(ct => ct.contact_id === c.id)
+          .map(ct => Array.isArray(ct.tags) ? ct.tags[0] : ct.tags)
+          .filter(Boolean) as TagItem[] || [];
 
         return { ...c, custom_values: customMap, tags: myTags };
       });
@@ -180,18 +190,18 @@ export default function ContactsDirectory() {
 
   // --- FILTERING & SORTING ENGINE ---
 
-  // Sort function
   const handleSort = (column: string) => {
     let direction: SortDirection = 'asc';
     if (sortConfig.column === column && sortConfig.direction === 'asc') direction = 'desc';
     if (sortConfig.column === column && sortConfig.direction === 'desc') direction = null;
 
-    setSortConfig({ column: direction ? column : null, direction });
+    const newSort = { column: direction ? column : null, direction };
+    setSortConfig(newSort);
+    localStorage.setItem('crm_sort_config', JSON.stringify(newSort)); // Save permanently
   };
 
   const processedContacts = contacts
     .filter(contact => {
-      // Search
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
         const matchesSearch =
@@ -201,16 +211,14 @@ export default function ContactsDirectory() {
           contact.company?.toLowerCase().includes(q);
         if (!matchesSearch) return false;
       }
-      // Tag Filter
       if (tagFilter.length > 0) {
         if (!contact.tags || contact.tags.length === 0) return false;
-        const hasMatchingTag = contact.tags.some(t => tagFilter.includes(t.id));
+        const hasMatchingTag = contact.tags.some(t => t && tagFilter.includes(t.id));
         if (!hasMatchingTag) return false;
       }
       return true;
     })
     .sort((a, b) => {
-      // Sorting
       if (!sortConfig.column || !sortConfig.direction) return 0;
 
       let valA: string = '';
@@ -232,6 +240,9 @@ export default function ContactsDirectory() {
       return 0;
     });
 
+  const toggleFilterTag = (tagId: string) => {
+    setTagFilter(prev => prev.includes(tagId) ? prev.filter(id => id !== tagId) : [...prev, tagId]);
+  };
 
   // --- ACTIONS ---
 
@@ -328,7 +339,7 @@ export default function ContactsDirectory() {
     setEditingContact(null);
   }
 
-  // --- DRAG AND RESIZE ---
+  // --- EXCEL DRAG AND RESIZE ENGINE ---
 
   const handleDragStart = (e: React.DragEvent, colId: string) => e.dataTransfer.setData('text/plain', colId);
 
@@ -358,15 +369,13 @@ export default function ContactsDirectory() {
     }
   };
 
+  // The "-1" signal tells the table to utilize native CSS max-content wrapping just like Excel!
   const handleDoubleClickResize = (colId: string) => {
     setColumnWidths(prev => {
-      const next = { ...prev };
-      delete next[colId];
+      const next = { ...prev, [colId]: -1 };
       localStorage.setItem('crm_col_widths', JSON.stringify(next));
       return next;
     });
-    const th = document.querySelector(`th[data-colid="${colId}"]`) as HTMLElement;
-    if (th) th.style.width = '200px';
   };
 
   function getColumnLabel(colId: string) {
@@ -558,9 +567,12 @@ export default function ContactsDirectory() {
             <p>{contacts.length > 0 ? "No contacts match your current filters." : "This folder is currently empty."}</p>
           </div>
         ) : (
-          <div className="flex-1 overflow-auto scrollbar-thin w-full max-w-full">
-            <table className="w-full text-left table-fixed border-collapse min-w-max">
-              <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10">
+          <div className="flex-1 overflow-x-auto overflow-y-auto scrollbar-thin w-full max-w-full">
+
+            {/* NO GHOST COLUMNS. Using w-max min-w-full to dynamically hug the contents safely */}
+            <table className="text-left table-fixed border-collapse w-max min-w-full">
+
+              <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10 shadow-sm">
                 <tr>
                   <th className="px-4 py-3 border-r border-slate-800/50 w-[50px] shrink-0 align-top">
                     <input
@@ -571,52 +583,54 @@ export default function ContactsDirectory() {
                     />
                   </th>
 
-                  {visibleOrderedCols.map(col => (
-                    <th
-                      key={col}
-                      data-colid={col}
-                      onMouseUp={(e) => handleMouseUpResize(col, e)}
-                      className="px-2 py-3 border-r border-slate-800/50 hover:bg-slate-800 transition-colors align-top group relative"
-                      style={{
-                        resize: 'horizontal',
-                        overflow: 'hidden',
-                        width: columnWidths[col] ? `${columnWidths[col]}px` : '200px',
-                        minWidth: 150,
-                        maxWidth: 800
-                      }}
-                    >
-                      <div className="flex items-center justify-between w-full h-full px-2">
-                        <div
-                          draggable
-                          onDragStart={(e) => handleDragStart(e, col)}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => handleDrop(e, col)}
-                          onDoubleClick={() => handleDoubleClickResize(col)}
-                          className="flex items-center gap-2 cursor-grab active:cursor-grabbing hover:text-white flex-1 overflow-hidden"
-                          title="Double-click to snap to default width"
-                        >
-                          <GripHorizontal className="size-3 text-slate-600 shrink-0" />
-                          <span className="truncate font-medium">{getColumnLabel(col)}</span>
+                  {visibleOrderedCols.map(col => {
+                    // Logic to decipher max-content vs forced pixel width
+                    const colWidth = columnWidths[col] === -1 ? 'max-content' : (columnWidths[col] ? `${columnWidths[col]}px` : '200px');
+
+                    return (
+                      <th
+                        key={col}
+                        data-colid={col}
+                        onMouseUp={(e) => handleMouseUpResize(col, e)}
+                        className="px-2 py-3 border-r border-slate-800/50 hover:bg-slate-800 transition-colors align-top group relative"
+                        style={{
+                          resize: 'horizontal',
+                          overflow: 'hidden',
+                          width: colWidth,
+                          minWidth: 150,
+                          maxWidth: 800
+                        }}
+                      >
+                        <div className="flex items-center justify-between w-full h-full px-2">
+                          <div
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, col)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={(e) => handleDrop(e, col)}
+                            onDoubleClick={() => handleDoubleClickResize(col)}
+                            className="flex items-center gap-2 cursor-grab active:cursor-grabbing hover:text-white flex-1 overflow-hidden"
+                            title="Double-click to snap to text width"
+                          >
+                            <GripHorizontal className="size-3 text-slate-600 shrink-0" />
+                            <span className="truncate font-medium">{getColumnLabel(col)}</span>
+                          </div>
+
+                          <button
+                            onClick={() => handleSort(col)}
+                            className={`p-1 rounded transition-colors shrink-0 ${sortConfig.column === col ? 'text-primary bg-primary/10' : 'text-slate-600 hover:text-white hover:bg-slate-700'}`}
+                            title={`Sort by ${getColumnLabel(col)}`}
+                          >
+                            <ArrowUpDown className="size-3.5" />
+                          </button>
                         </div>
-
-                        {/* Sort Icon Button */}
-                        <button
-                          onClick={() => handleSort(col)}
-                          className={`p-1 rounded transition-colors shrink-0 ${sortConfig.column === col ? 'text-primary bg-primary/10' : 'text-slate-600 hover:text-white hover:bg-slate-700'}`}
-                          title={`Sort by ${getColumnLabel(col)}`}
-                        >
-                          <ArrowUpDown className="size-3.5" />
-                        </button>
-                      </div>
-                    </th>
-                  ))}
-
-                  {/* Removing infinite expansion width bounds fix */}
-                  <th className="w-auto border-none"></th>
+                      </th>
+                    )
+                  })}
 
                   <th className="px-4 py-3 font-medium text-right sticky right-0 bg-slate-950/95 w-[80px]">Actions</th>
                 </tr>
               </thead>
+
               <tbody className="divide-y divide-slate-800/50">
                 {processedContacts.map((contact) => (
                   <tr key={contact.id} className={`transition-colors group ${selectedContacts.has(contact.id) ? 'bg-primary/10' : 'hover:bg-slate-800/40'}`}>
@@ -635,8 +649,6 @@ export default function ContactsDirectory() {
                       </td>
                     ))}
 
-                    <td className="w-auto border-none"></td>
-
                     <td className="px-4 py-3 text-right sticky right-0 bg-slate-900 group-hover:bg-slate-800/40 border-l border-slate-800/50 align-top">
                       <Button variant="ghost" size="icon" onClick={() => handleEditClick(contact)} className="size-8 text-slate-400 hover:text-primary hover:bg-primary/10">
                         <Edit className="size-4" />
@@ -645,11 +657,13 @@ export default function ContactsDirectory() {
                   </tr>
                 ))}
               </tbody>
+
             </table>
           </div>
         )}
       </div>
 
+      {/* Editing Modal Component */}
       <Dialog open={!!editingContact} onOpenChange={(open) => !open && setEditingContact(null)}>
         <DialogContent className="bg-slate-900 border-slate-700 text-white max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader><DialogTitle>Edit Contact Details</DialogTitle></DialogHeader>
