@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Upload, Trash2, Tag as TagIcon } from 'lucide-react';
+import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Upload, Trash2, Tag as TagIcon, ArrowUpDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -44,6 +44,13 @@ interface CustomField {
   field_name: string;
 }
 
+// Sorting Types
+type SortDirection = 'asc' | 'desc' | null;
+interface SortState {
+  column: string | null;
+  direction: SortDirection;
+}
+
 export default function ContactsDirectory() {
   const supabase = createClient();
   const { accountId } = useAuth();
@@ -56,10 +63,11 @@ export default function ContactsDirectory() {
   const [allTags, setAllTags] = useState<TagItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Search & Filter State
+  // Search, Filter & Sort State
   const [searchQuery, setSearchQuery] = useState('');
   const [tagFilter, setTagFilter] = useState<string[]>([]);
   const [showTagFilterMenu, setShowTagFilterMenu] = useState(false);
+  const [sortConfig, setSortConfig] = useState<SortState>({ column: null, direction: null });
 
   // Bulk Selection State
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
@@ -83,14 +91,15 @@ export default function ContactsDirectory() {
     tags: [] as string[]
   });
 
-  // Clear selections and filters when changing folders
+  // Clear states when changing folders
   useEffect(() => {
     setSelectedContacts(new Set());
     setSearchQuery('');
     setTagFilter([]);
+    setSortConfig({ column: null, direction: null });
   }, [activeFolder]);
 
-  // 1. Fetch Folders, Tags & Setup Memory State
+  // 1. Fetch Initial Schema
   useEffect(() => {
     if (!accountId) return;
     async function loadInitialData() {
@@ -123,12 +132,8 @@ export default function ContactsDirectory() {
           const missingFields = newOrder.filter(col => !parsedOrder.includes(col));
           newOrder = [...parsedOrder, ...missingFields];
         }
-        if (savedVis) {
-          newCols = { ...newCols, ...JSON.parse(savedVis) };
-        }
-        if (savedWidths) {
-          setColumnWidths(JSON.parse(savedWidths));
-        }
+        if (savedVis) newCols = { ...newCols, ...JSON.parse(savedVis) };
+        if (savedWidths) setColumnWidths(JSON.parse(savedWidths));
 
         setVisibleColumns(newCols);
         setColumnOrder(newOrder);
@@ -139,7 +144,7 @@ export default function ContactsDirectory() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, supabase]);
 
-  // 2. Fetch Contacts & Assigned Tags for Active Folder
+  // 2. Fetch Contacts
   useEffect(() => {
     if (!activeFolder || !accountId) return;
     async function loadFolderContacts() {
@@ -173,46 +178,74 @@ export default function ContactsDirectory() {
     loadFolderContacts();
   }, [activeFolder, accountId, supabase]);
 
-  // --- FILTERING LOGIC ---
+  // --- FILTERING & SORTING ENGINE ---
 
-  const displayedContacts = contacts.filter(contact => {
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const matchesSearch =
-        contact.name?.toLowerCase().includes(q) ||
-        contact.phone.includes(q) ||
-        contact.email?.toLowerCase().includes(q) ||
-        contact.company?.toLowerCase().includes(q);
-      if (!matchesSearch) return false;
-    }
-    if (tagFilter.length > 0) {
-      if (!contact.tags || contact.tags.length === 0) return false;
-      const hasMatchingTag = contact.tags.some(t => tagFilter.includes(t.id));
-      if (!hasMatchingTag) return false;
-    }
-    return true;
-  });
+  // Sort function
+  const handleSort = (column: string) => {
+    let direction: SortDirection = 'asc';
+    if (sortConfig.column === column && sortConfig.direction === 'asc') direction = 'desc';
+    if (sortConfig.column === column && sortConfig.direction === 'desc') direction = null;
 
-  const toggleFilterTag = (tagId: string) => {
-    setTagFilter(prev => prev.includes(tagId) ? prev.filter(id => id !== tagId) : [...prev, tagId]);
+    setSortConfig({ column: direction ? column : null, direction });
   };
+
+  const processedContacts = contacts
+    .filter(contact => {
+      // Search
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        const matchesSearch =
+          contact.name?.toLowerCase().includes(q) ||
+          contact.phone.includes(q) ||
+          contact.email?.toLowerCase().includes(q) ||
+          contact.company?.toLowerCase().includes(q);
+        if (!matchesSearch) return false;
+      }
+      // Tag Filter
+      if (tagFilter.length > 0) {
+        if (!contact.tags || contact.tags.length === 0) return false;
+        const hasMatchingTag = contact.tags.some(t => tagFilter.includes(t.id));
+        if (!hasMatchingTag) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      // Sorting
+      if (!sortConfig.column || !sortConfig.direction) return 0;
+
+      let valA: string = '';
+      let valB: string = '';
+
+      if (['name', 'phone', 'email', 'company'].includes(sortConfig.column)) {
+        valA = String((a as any)[sortConfig.column] || '').toLowerCase();
+        valB = String((b as any)[sortConfig.column] || '').toLowerCase();
+      } else if (sortConfig.column === 'tags') {
+        valA = a.tags?.map(t => t.name).join(',').toLowerCase() || '';
+        valB = b.tags?.map(t => t.name).join(',').toLowerCase() || '';
+      } else {
+        valA = String(a.custom_values?.[sortConfig.column] || '').toLowerCase();
+        valB = String(b.custom_values?.[sortConfig.column] || '').toLowerCase();
+      }
+
+      if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
+      if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
+      return 0;
+    });
+
 
   // --- ACTIONS ---
 
   async function handleDeleteFolder(folderId: string) {
     if (!confirm("⚠️ WARNING: This will delete this folder AND completely erase all contacts inside it. Proceed?")) return;
     const { error } = await supabase.from('folders').delete().eq('id', folderId);
-    if (error) {
-      toast.error("Failed to delete folder");
-      return;
-    }
+    if (error) return toast.error("Failed to delete folder");
     toast.success("Folder and contacts permanently deleted.");
     setFolders(prev => prev.filter(f => f.id !== folderId));
   }
 
   const toggleSelectAll = () => {
-    if (selectedContacts.size === displayedContacts.length) setSelectedContacts(new Set());
-    else setSelectedContacts(new Set(displayedContacts.map(c => c.id)));
+    if (selectedContacts.size === processedContacts.length && processedContacts.length > 0) setSelectedContacts(new Set());
+    else setSelectedContacts(new Set(processedContacts.map(c => c.id)));
   };
 
   const toggleSelectRow = (id: string) => {
@@ -225,7 +258,6 @@ export default function ContactsDirectory() {
   async function handleBulkDelete() {
     if (!confirm(`Are you sure you want to delete ${selectedContacts.size} contacts? This cannot be undone.`)) return;
     const idsToDelete = Array.from(selectedContacts);
-
     const { error } = await supabase.from('contacts').delete().in('id', idsToDelete);
     if (error) toast.error("Failed to delete contacts.");
     else {
@@ -242,6 +274,8 @@ export default function ContactsDirectory() {
       return next;
     });
   };
+
+  // --- EDITING ---
 
   function handleEditClick(contact: Contact) {
     setEditForm({
@@ -263,10 +297,7 @@ export default function ContactsDirectory() {
       .update({ name: editForm.name, phone: editForm.phone, email: editForm.email, company: editForm.company })
       .eq('id', editingContact.id);
 
-    if (baseError) {
-      toast.error("Failed to update contact base info.");
-      return;
-    }
+    if (baseError) return toast.error("Failed to update contact base info.");
 
     const customValuesArray = Object.entries(editForm.custom_values).map(([id, val]) => ({
       contact_id: editingContact.id,
@@ -297,7 +328,7 @@ export default function ContactsDirectory() {
     setEditingContact(null);
   }
 
-  // --- DRAG, DROP, AND SAFE RESIZE LOGIC ---
+  // --- DRAG AND RESIZE ---
 
   const handleDragStart = (e: React.DragEvent, colId: string) => e.dataTransfer.setData('text/plain', colId);
 
@@ -316,11 +347,8 @@ export default function ContactsDirectory() {
     localStorage.setItem('crm_col_order', JSON.stringify(newOrder));
   };
 
-  // FIX: Mouse Up Capture Event. Completely replaces the buggy ResizeObserver.
   const handleMouseUpResize = (colId: string, e: React.MouseEvent<HTMLTableCellElement>) => {
     const newWidth = Math.round(e.currentTarget.getBoundingClientRect().width);
-
-    // Only trigger a save if the width actually changed
     if (columnWidths[colId] !== newWidth) {
       setColumnWidths(prev => {
         const next = { ...prev, [colId]: newWidth };
@@ -368,7 +396,7 @@ export default function ContactsDirectory() {
     }
   }
 
-  // --- RENDER BLOCK ---
+  // --- RENDERS ---
 
   if (!activeFolder) {
     return (
@@ -521,16 +549,16 @@ export default function ContactsDirectory() {
         </div>
       </div>
 
-      <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col relative">
+      <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col relative max-w-full">
         {loading ? (
           <div className="flex-1 flex justify-center items-center"><Loader2 className="size-8 animate-spin text-primary" /></div>
-        ) : displayedContacts.length === 0 ? (
+        ) : processedContacts.length === 0 ? (
           <div className="flex-1 flex flex-col justify-center items-center text-slate-500">
             <Users className="size-10 mb-2 opacity-50" />
             <p>{contacts.length > 0 ? "No contacts match your current filters." : "This folder is currently empty."}</p>
           </div>
         ) : (
-          <div className="flex-1 overflow-auto scrollbar-thin w-full">
+          <div className="flex-1 overflow-auto scrollbar-thin w-full max-w-full">
             <table className="w-full text-left table-fixed border-collapse min-w-max">
               <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10">
                 <tr>
@@ -538,7 +566,7 @@ export default function ContactsDirectory() {
                     <input
                       type="checkbox"
                       onChange={toggleSelectAll}
-                      checked={selectedContacts.size === displayedContacts.length && displayedContacts.length > 0}
+                      checked={selectedContacts.size === processedContacts.length && processedContacts.length > 0}
                       className="rounded border-slate-600 bg-slate-900 text-primary cursor-pointer mt-1"
                     />
                   </th>
@@ -547,7 +575,7 @@ export default function ContactsDirectory() {
                     <th
                       key={col}
                       data-colid={col}
-                      onMouseUp={(e) => handleMouseUpResize(col, e)} // FIX: Fire only when mouse clicks up!
+                      onMouseUp={(e) => handleMouseUpResize(col, e)}
                       className="px-2 py-3 border-r border-slate-800/50 hover:bg-slate-800 transition-colors align-top group relative"
                       style={{
                         resize: 'horizontal',
@@ -557,28 +585,40 @@ export default function ContactsDirectory() {
                         maxWidth: 800
                       }}
                     >
-                      <div
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, col)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => handleDrop(e, col)}
-                        onDoubleClick={() => handleDoubleClickResize(col)}
-                        className="flex items-center gap-2 w-full h-full cursor-grab active:cursor-grabbing hover:text-white px-2"
-                        title="Double-click to snap to default width"
-                      >
-                        <GripHorizontal className="size-3 text-slate-600 shrink-0" />
-                        <span className="truncate font-medium">{getColumnLabel(col)}</span>
+                      <div className="flex items-center justify-between w-full h-full px-2">
+                        <div
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, col)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => handleDrop(e, col)}
+                          onDoubleClick={() => handleDoubleClickResize(col)}
+                          className="flex items-center gap-2 cursor-grab active:cursor-grabbing hover:text-white flex-1 overflow-hidden"
+                          title="Double-click to snap to default width"
+                        >
+                          <GripHorizontal className="size-3 text-slate-600 shrink-0" />
+                          <span className="truncate font-medium">{getColumnLabel(col)}</span>
+                        </div>
+
+                        {/* Sort Icon Button */}
+                        <button
+                          onClick={() => handleSort(col)}
+                          className={`p-1 rounded transition-colors shrink-0 ${sortConfig.column === col ? 'text-primary bg-primary/10' : 'text-slate-600 hover:text-white hover:bg-slate-700'}`}
+                          title={`Sort by ${getColumnLabel(col)}`}
+                        >
+                          <ArrowUpDown className="size-3.5" />
+                        </button>
                       </div>
                     </th>
                   ))}
 
-                  <th className="w-full min-w-[40px]"></th>
+                  {/* Removing infinite expansion width bounds fix */}
+                  <th className="w-auto border-none"></th>
 
                   <th className="px-4 py-3 font-medium text-right sticky right-0 bg-slate-950/95 w-[80px]">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/50">
-                {displayedContacts.map((contact) => (
+                {processedContacts.map((contact) => (
                   <tr key={contact.id} className={`transition-colors group ${selectedContacts.has(contact.id) ? 'bg-primary/10' : 'hover:bg-slate-800/40'}`}>
                     <td className="px-4 py-3 border-r border-slate-800/50 align-top">
                       <input
@@ -595,7 +635,7 @@ export default function ContactsDirectory() {
                       </td>
                     ))}
 
-                    <td className="w-full min-w-[40px]"></td>
+                    <td className="w-auto border-none"></td>
 
                     <td className="px-4 py-3 text-right sticky right-0 bg-slate-900 group-hover:bg-slate-800/40 border-l border-slate-800/50 align-top">
                       <Button variant="ghost" size="icon" onClick={() => handleEditClick(contact)} className="size-8 text-slate-400 hover:text-primary hover:bg-primary/10">
