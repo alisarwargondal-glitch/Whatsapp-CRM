@@ -32,7 +32,6 @@ interface ParsedRow {
   name?: string;
   email?: string;
   company?: string;
-  // Hold any detected custom field matches as fieldId -> string value
   customFieldsMap?: Record<string, string>;
 }
 
@@ -41,7 +40,6 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
   if (lines.length < 2) return [];
 
   const headerLine = lines[0];
-  // Normalize the CSV headers: lowercase them and strip special characters/spaces
   const headers = headerLine.split(',').map((h) =>
     h.trim().toLowerCase().replace(/["']/g, '').replace(/[^a-z0-9]/g, '')
   );
@@ -53,7 +51,6 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
 
-  // Normalize CRM custom field names the exact same way for a flawless match
   const customFieldMappings = dynamicCustomFields.map(cf => {
     const normalizedCrmName = cf.field_name.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
     return {
@@ -102,47 +99,6 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
 
   return rows;
 }
-const rows: ParsedRow[] = [];
-for (let i = 1; i < lines.length; i++) {
-  const line = lines[i].trim();
-  if (!line) continue;
-
-  const values: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (const char of line) {
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      values.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  values.push(current.trim());
-
-  const phone = values[phoneIdx]?.replace(/["']/g, '').trim();
-  if (!phone) continue;
-
-  // Gather mapped dynamic metrics properties
-  const customFieldsMap: Record<string, string> = {};
-  customFieldMappings.forEach(m => {
-    const val = values[m.index]?.replace(/["']/g, '').trim();
-    if (val) customFieldsMap[m.id] = val;
-  });
-
-  rows.push({
-    phone,
-    name: nameIdx >= 0 ? values[nameIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
-    email: emailIdx >= 0 ? values[emailIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
-    company: companyIdx >= 0 ? values[companyIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
-    customFieldsMap
-  });
-}
-
-return rows;
-}
 
 export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps) {
   const supabase = createClient();
@@ -159,7 +115,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     failed: number;
   } | null>(null);
 
-  // Fetch registered dynamic properties from DB metadata cache table
   useEffect(() => {
     if (!open) return;
     (async () => {
@@ -199,7 +154,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     setParsedRows(rows);
   }
 
-  // Handle transaction relational storage bindings cleanly
   async function insertContactCustomFields(contactId: string, customMap?: Record<string, string>) {
     if (!customMap || Object.keys(customMap).length === 0) return;
 
@@ -248,7 +202,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         return true;
       });
 
-      // Insert records individually or split chunks to resolve unique ID returns sequentially
       for (const row of toInsert) {
         const contactPayload = {
           user_id: user.id,
