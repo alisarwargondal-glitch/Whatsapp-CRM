@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Upload, Trash2 } from 'lucide-react';
+import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Upload, Trash2, Tag as TagIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -23,6 +23,12 @@ interface FolderItem {
   color: string;
 }
 
+interface TagItem {
+  id: string;
+  name: string;
+  color: string;
+}
+
 interface Contact {
   id: string;
   phone: string;
@@ -30,6 +36,7 @@ interface Contact {
   email: string | null;
   company: string | null;
   custom_values?: Record<string, string>;
+  tags?: TagItem[];
 }
 
 interface CustomField {
@@ -46,7 +53,13 @@ export default function ContactsDirectory() {
   const [folders, setFolders] = useState<FolderItem[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
+  const [allTags, setAllTags] = useState<TagItem[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Search & Filter State
+  const [searchQuery, setSearchQuery] = useState('');
+  const [tagFilter, setTagFilter] = useState<string[]>([]);
+  const [showTagFilterMenu, setShowTagFilterMenu] = useState(false);
 
   // Bulk Selection State
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
@@ -55,50 +68,56 @@ export default function ContactsDirectory() {
   const [isImportOpen, setIsImportOpen] = useState(false);
 
   // Column Tracking & Memory State
-  const [columnOrder, setColumnOrder] = useState<string[]>(['name', 'phone', 'email', 'company']);
+  const [columnOrder, setColumnOrder] = useState<string[]>(['name', 'phone', 'tags', 'email', 'company']);
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
-    name: true, phone: true, email: true, company: true,
+    name: true, phone: true, tags: true, email: true, company: true,
   });
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [showColumnMenu, setShowColumnMenu] = useState(false);
 
   // Edit State
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', phone: '', email: '', company: '', custom_values: {} as Record<string, string> });
+  const [editForm, setEditForm] = useState({
+    name: '', phone: '', email: '', company: '',
+    custom_values: {} as Record<string, string>,
+    tags: [] as string[]
+  });
 
-  // Clear selections when changing folders
+  // Clear selections and filters when changing folders
   useEffect(() => {
     setSelectedContacts(new Set());
+    setSearchQuery('');
+    setTagFilter([]);
   }, [activeFolder]);
 
-  // 1. Fetch Folders & Setup Memory State Safely
+  // 1. Fetch Folders, Tags & Setup Memory State
   useEffect(() => {
     if (!accountId) return;
-    async function loadFolders() {
+    async function loadInitialData() {
       setLoading(true);
-      const { data: folderData } = await supabase
-        .from('folders')
-        .select('*')
-        .eq('account_id', accountId)
-        .order('name');
+
+      // Load Folders
+      const { data: folderData } = await supabase.from('folders').select('*').eq('account_id', accountId).order('name');
       if (folderData) setFolders(folderData);
 
-      const { data: fieldsData } = await supabase
-        .from('custom_fields')
-        .select('id, field_name')
-        .order('field_name');
+      // Load Tags (For Automations / Filtering)
+      const { data: tagData } = await supabase.from('tags').select('*').eq('account_id', accountId).order('name');
+      if (tagData) setAllTags(tagData);
+
+      // Load Custom Fields
+      const { data: fieldsData } = await supabase.from('custom_fields').select('id, field_name').order('field_name');
 
       if (fieldsData) {
         setCustomFields(fieldsData);
-        let newCols = { name: true, phone: true, email: true, company: true } as Record<string, boolean>;
-        let newOrder = ['name', 'phone', 'email', 'company'];
+        let newCols = { name: true, phone: true, tags: true, email: true, company: true } as Record<string, boolean>;
+        let newOrder = ['name', 'phone', 'tags', 'email', 'company'];
 
         fieldsData.forEach(field => {
           newCols[field.id] = true;
           newOrder.push(field.id);
         });
 
-        // Pull saved adjustments from Browser LocalStorage safely!
+        // Pull saved adjustments from Browser LocalStorage safely
         const savedOrder = localStorage.getItem('crm_col_order');
         const savedVis = localStorage.getItem('crm_col_vis');
         const savedWidths = localStorage.getItem('crm_col_widths');
@@ -106,7 +125,7 @@ export default function ContactsDirectory() {
         if (savedOrder) {
           const parsedOrder = JSON.parse(savedOrder);
           const missingFields = newOrder.filter(col => !parsedOrder.includes(col));
-          newOrder = [...parsedOrder, ...missingFields]; // Safely merge new fields with saved order
+          newOrder = [...parsedOrder, ...missingFields];
         }
         if (savedVis) {
           newCols = { ...newCols, ...JSON.parse(savedVis) };
@@ -120,11 +139,11 @@ export default function ContactsDirectory() {
       }
       setLoading(false);
     }
-    loadFolders();
+    loadInitialData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, supabase]);
 
-  // FIX: Robust ResizeObserver to perfectly track CSS Drag adjustments
+  // ResizeObserver for Column Widths
   useEffect(() => {
     if (!activeFolder || contacts.length === 0) return;
     const thElements = document.querySelectorAll('.resizable-th');
@@ -133,7 +152,6 @@ export default function ContactsDirectory() {
     let timeoutId: NodeJS.Timeout;
 
     const observer = new ResizeObserver((entries) => {
-      // Debounce saving to prevent spamming local storage while actively dragging
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => {
         setColumnWidths(prev => {
@@ -144,7 +162,7 @@ export default function ContactsDirectory() {
             const colId = entry.target.getAttribute('data-colid');
             const newWidth = Math.round(entry.contentRect.width);
 
-            if (colId && next[colId] !== newWidth && newWidth > 150) {
+            if (colId && next[colId] !== newWidth && newWidth > 120) {
               next[colId] = newWidth;
               hasChanges = true;
             }
@@ -165,17 +183,14 @@ export default function ContactsDirectory() {
       observer.disconnect();
       clearTimeout(timeoutId);
     };
-  }, [activeFolder, contacts, columnOrder, visibleColumns]); // Re-attach when table renders
+  }, [activeFolder, contacts, columnOrder, visibleColumns]);
 
-  // 2. Fetch Contacts for Active Folder
+  // 2. Fetch Contacts & Assigned Tags for Active Folder
   useEffect(() => {
     if (!activeFolder || !accountId) return;
     async function loadFolderContacts() {
       setLoading(true);
-      const { data: contactsData } = await supabase
-        .from('contacts')
-        .select('*')
-        .eq('folder_id', activeFolder.id);
+      const { data: contactsData } = await supabase.from('contacts').select('*').eq('folder_id', activeFolder.id);
 
       if (!contactsData || contactsData.length === 0) {
         setContacts([]);
@@ -184,22 +199,58 @@ export default function ContactsDirectory() {
       }
 
       const contactIds = contactsData.map(c => c.id);
-      const { data: customValuesData } = await supabase
-        .from('contact_custom_values')
-        .select('*')
-        .in('contact_id', contactIds);
+
+      // Fetch Custom Values
+      const { data: customValuesData } = await supabase.from('contact_custom_values').select('*').in('contact_id', contactIds);
+
+      // Fetch Assigned Tags
+      const { data: contactTagsData } = await supabase.from('contact_tags').select('contact_id, tag_id, tags(id, name, color)').in('contact_id', contactIds);
 
       const formattedContacts = contactsData.map(c => {
         const cVals = customValuesData?.filter(cv => cv.contact_id === c.id) || [];
         const customMap: Record<string, string> = {};
         cVals.forEach(cv => { customMap[cv.custom_field_id] = cv.value; });
-        return { ...c, custom_values: customMap };
+
+        // Map standard tags
+        const myTags = contactTagsData?.filter(ct => ct.contact_id === c.id).map(ct => ct.tags as unknown as TagItem).filter(Boolean) || [];
+
+        return { ...c, custom_values: customMap, tags: myTags };
       });
+
       setContacts(formattedContacts);
       setLoading(false);
     }
     loadFolderContacts();
   }, [activeFolder, accountId, supabase]);
+
+  // --- FILTERING LOGIC ---
+
+  const displayedContacts = contacts.filter(contact => {
+    // 1. Search Filter
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const matchesSearch =
+        contact.name?.toLowerCase().includes(q) ||
+        contact.phone.includes(q) ||
+        contact.email?.toLowerCase().includes(q) ||
+        contact.company?.toLowerCase().includes(q);
+      if (!matchesSearch) return false;
+    }
+
+    // 2. Tag Filter
+    if (tagFilter.length > 0) {
+      if (!contact.tags || contact.tags.length === 0) return false;
+      const hasMatchingTag = contact.tags.some(t => tagFilter.includes(t.id));
+      if (!hasMatchingTag) return false;
+    }
+
+    return true;
+  });
+
+  const toggleFilterTag = (tagId: string) => {
+    setTagFilter(prev => prev.includes(tagId) ? prev.filter(id => id !== tagId) : [...prev, tagId]);
+  };
+
 
   // --- ACTIONS ---
 
@@ -216,8 +267,8 @@ export default function ContactsDirectory() {
 
   // Handle Bulk Contact Selection
   const toggleSelectAll = () => {
-    if (selectedContacts.size === contacts.length) setSelectedContacts(new Set());
-    else setSelectedContacts(new Set(contacts.map(c => c.id)));
+    if (selectedContacts.size === displayedContacts.length) setSelectedContacts(new Set());
+    else setSelectedContacts(new Set(displayedContacts.map(c => c.id)));
   };
 
   const toggleSelectRow = (id: string) => {
@@ -249,14 +300,15 @@ export default function ContactsDirectory() {
     });
   };
 
-  // Editing Contacts logic (Now includes custom fields!)
+  // Editing Contacts logic
   function handleEditClick(contact: Contact) {
     setEditForm({
       name: contact.name || '',
       phone: contact.phone || '',
       email: contact.email || '',
       company: contact.company || '',
-      custom_values: { ...(contact.custom_values || {}) }
+      custom_values: { ...(contact.custom_values || {}) },
+      tags: contact.tags?.map(t => t.id) || []
     });
     setEditingContact(contact);
   }
@@ -264,6 +316,7 @@ export default function ContactsDirectory() {
   async function saveContactEdit() {
     if (!editingContact) return;
 
+    // 1. Update Base Fields
     const { error: baseError } = await supabase
       .from('contacts')
       .update({ name: editForm.name, phone: editForm.phone, email: editForm.email, company: editForm.company })
@@ -274,6 +327,7 @@ export default function ContactsDirectory() {
       return;
     }
 
+    // 2. Update Custom Fields 
     const customValuesArray = Object.entries(editForm.custom_values).map(([id, val]) => ({
       contact_id: editingContact.id,
       custom_field_id: id,
@@ -281,15 +335,28 @@ export default function ContactsDirectory() {
     }));
 
     if (customValuesArray.length > 0) {
-      const { error: customError } = await supabase
-        .from('contact_custom_values')
-        .upsert(customValuesArray, { onConflict: 'contact_id, custom_field_id' });
+      await supabase.from('contact_custom_values').upsert(customValuesArray, { onConflict: 'contact_id, custom_field_id' });
+    }
 
-      if (customError) toast.error("Some custom fields failed to save.");
+    // 3. Update Automation Tags
+    const currentTagIds = editingContact.tags?.map(t => t.id) || [];
+    const newTagIds = editForm.tags;
+
+    const tagsToAdd = newTagIds.filter(id => !currentTagIds.includes(id));
+    const tagsToRemove = currentTagIds.filter(id => !newTagIds.includes(id));
+
+    if (tagsToAdd.length > 0) {
+      await supabase.from('contact_tags').insert(tagsToAdd.map(tagId => ({ contact_id: editingContact.id, tag_id: tagId })));
+    }
+    if (tagsToRemove.length > 0) {
+      await supabase.from('contact_tags').delete().eq('contact_id', editingContact.id).in('tag_id', tagsToRemove);
     }
 
     toast.success("Contact updated!");
-    setContacts(prev => prev.map(c => c.id === editingContact.id ? { ...c, ...editForm } : c));
+
+    // Optimistic UI Update
+    const updatedTags = allTags.filter(t => newTagIds.includes(t.id));
+    setContacts(prev => prev.map(c => c.id === editingContact.id ? { ...c, ...editForm, tags: updatedTags } : c));
     setEditingContact(null);
   }
 
@@ -309,24 +376,22 @@ export default function ContactsDirectory() {
     newOrder.splice(tgtIdx, 0, sourceColId);
 
     setColumnOrder(newOrder);
-    localStorage.setItem('crm_col_order', JSON.stringify(newOrder)); // Explicit Save
+    localStorage.setItem('crm_col_order', JSON.stringify(newOrder));
   };
 
   const handleDoubleClickResize = (colId: string) => {
     setColumnWidths(prev => {
       const next = { ...prev };
-      delete next[colId]; // Deleting specific saved width forces Auto-Fit
+      delete next[colId];
       localStorage.setItem('crm_col_widths', JSON.stringify(next));
       return next;
     });
-
-    // Manually wipe the inline style applied by the browser to instantly snap it back
     const th = document.querySelector(`th[data-colid="${colId}"]`) as HTMLElement;
     if (th) th.style.width = 'auto';
   };
 
   function getColumnLabel(colId: string) {
-    if (['name', 'phone', 'email', 'company'].includes(colId)) return colId.charAt(0).toUpperCase() + colId.slice(1);
+    if (['name', 'phone', 'email', 'company', 'tags'].includes(colId)) return colId.charAt(0).toUpperCase() + colId.slice(1);
     return customFields.find(cf => cf.id === colId)?.field_name || colId;
   }
 
@@ -337,6 +402,17 @@ export default function ContactsDirectory() {
       case 'phone': return <span className={`text-slate-300 font-mono ${baseClasses}`}>{contact.phone}</span>;
       case 'email': return <span className={`text-slate-400 ${baseClasses}`}>{contact.email || '-'}</span>;
       case 'company': return <span className={`text-slate-400 ${baseClasses}`}>{contact.company || '-'}</span>;
+      case 'tags': return (
+        <div className={`flex flex-wrap gap-1 ${baseClasses}`}>
+          {(!contact.tags || contact.tags.length === 0) ? <span className="text-slate-600">-</span> :
+            contact.tags.map(t => (
+              <span key={t.id} className="px-1.5 py-0.5 rounded text-[11px] font-medium border border-transparent whitespace-nowrap" style={{ backgroundColor: `${t.color}20`, color: t.color, borderColor: `${t.color}40` }}>
+                {t.name}
+              </span>
+            ))
+          }
+        </div>
+      );
       default: return <span className={`text-slate-400 ${baseClasses}`}>{contact.custom_values?.[col] || '-'}</span>;
     }
   }
@@ -397,7 +473,7 @@ export default function ContactsDirectory() {
   }
 
   const visibleOrderedCols = columnOrder.filter(col => visibleColumns[col]);
-  const defaultCols = ['name', 'phone', 'email', 'company'];
+  const defaultCols = ['name', 'phone', 'tags', 'email', 'company'];
   const customCols = columnOrder.filter(col => !defaultCols.includes(col));
 
   return (
@@ -423,20 +499,59 @@ export default function ContactsDirectory() {
             </Button>
           )}
 
+          {/* Connected Search Bar */}
           <div className="relative">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-            <Input placeholder="Search..." className="w-64 pl-9 bg-slate-950 border-slate-700 text-sm" />
+            <Input
+              placeholder="Search..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="w-64 pl-9 bg-slate-950 border-slate-700 text-sm text-white"
+            />
+            {searchQuery && (
+              <X className="size-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 cursor-pointer hover:text-white" onClick={() => setSearchQuery('')} />
+            )}
           </div>
 
+          {/* New Filter By Tag Dropdown */}
           <div className="relative">
-            <Button variant="outline" className="border-slate-700 bg-slate-950 text-slate-300" onClick={() => setShowColumnMenu(!showColumnMenu)}>
+            <Button variant="outline" className={`border-slate-700 bg-slate-950 text-slate-300 ${tagFilter.length > 0 ? 'border-primary/50 text-primary' : ''}`} onClick={() => { setShowTagFilterMenu(!showTagFilterMenu); setShowColumnMenu(false); }}>
+              <TagIcon className="size-4 mr-2" /> Filter Tags
+              {tagFilter.length > 0 && <span className="ml-2 bg-primary text-white text-xs rounded-full px-1.5 py-0.5">{tagFilter.length}</span>}
+            </Button>
+            {showTagFilterMenu && (
+              <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 p-2 flex flex-col">
+                <div className="text-xs font-semibold text-slate-400 uppercase px-2 mb-2 pt-2">Filter by Automations</div>
+                {allTags.length === 0 ? (
+                  <div className="text-xs text-slate-500 p-2 italic">No tags exist yet.</div>
+                ) : (
+                  <div className="max-h-[300px] overflow-y-auto space-y-1 scrollbar-thin pb-2">
+                    {allTags.map(tag => (
+                      <label key={tag.id} className="flex items-center gap-2 p-2 mx-1 hover:bg-slate-800 rounded cursor-pointer">
+                        <input type="checkbox" checked={tagFilter.includes(tag.id)} onChange={() => toggleFilterTag(tag.id)} className="rounded border-slate-600 text-primary focus:ring-primary bg-slate-900" />
+                        <span className="text-sm truncate" style={{ color: tag.color }}>{tag.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {tagFilter.length > 0 && (
+                  <div className="border-t border-slate-800 pt-2 mt-1">
+                    <Button variant="ghost" size="sm" onClick={() => setTagFilter([])} className="w-full text-xs text-slate-400 hover:text-white">Clear Filters</Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Columns Dropdown */}
+          <div className="relative">
+            <Button variant="outline" className="border-slate-700 bg-slate-950 text-slate-300" onClick={() => { setShowColumnMenu(!showColumnMenu); setShowTagFilterMenu(false); }}>
               <Settings2 className="size-4 mr-2" /> Columns
             </Button>
             {showColumnMenu && (
-              <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 p-2 overflow-hidden flex flex-col">
+              <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 p-2 flex flex-col">
                 <div className="text-xs font-semibold text-slate-400 uppercase px-2 mb-2 pt-2">Default Fields</div>
                 <div className="max-h-[300px] overflow-y-auto space-y-1 scrollbar-thin pb-2">
-                  {/* Default Fields Group */}
                   {defaultCols.map(col => (
                     <label key={col} className="flex items-center gap-2 p-2 mx-1 hover:bg-slate-800 rounded cursor-pointer">
                       <input type="checkbox" checked={visibleColumns[col] || false} onChange={() => handleToggleColumn(col)} className="rounded border-slate-600 text-primary focus:ring-primary bg-slate-900" />
@@ -444,7 +559,6 @@ export default function ContactsDirectory() {
                     </label>
                   ))}
 
-                  {/* Custom Fields Group */}
                   {customCols.length > 0 && <div className="text-xs font-semibold text-slate-400 uppercase px-2 pt-2 pb-1 border-t border-slate-800 mt-1">Custom Fields</div>}
                   {customCols.map(col => (
                     <label key={col} className="flex items-center gap-2 p-2 mx-1 hover:bg-slate-800 rounded cursor-pointer">
@@ -462,10 +576,10 @@ export default function ContactsDirectory() {
       <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col relative">
         {loading ? (
           <div className="flex-1 flex justify-center items-center"><Loader2 className="size-8 animate-spin text-primary" /></div>
-        ) : contacts.length === 0 ? (
+        ) : displayedContacts.length === 0 ? (
           <div className="flex-1 flex flex-col justify-center items-center text-slate-500">
             <Users className="size-10 mb-2 opacity-50" />
-            <p>This folder is currently empty.</p>
+            <p>{contacts.length > 0 ? "No contacts match your current filters." : "This folder is currently empty."}</p>
           </div>
         ) : (
           <div className="flex-1 overflow-auto scrollbar-thin w-full">
@@ -476,7 +590,7 @@ export default function ContactsDirectory() {
                     <input
                       type="checkbox"
                       onChange={toggleSelectAll}
-                      checked={selectedContacts.size === contacts.length && contacts.length > 0}
+                      checked={selectedContacts.size === displayedContacts.length && displayedContacts.length > 0}
                       className="rounded border-slate-600 bg-slate-900 text-primary cursor-pointer mt-1"
                     />
                   </th>
@@ -512,7 +626,7 @@ export default function ContactsDirectory() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/50">
-                {contacts.map((contact) => (
+                {displayedContacts.map((contact) => (
                   <tr key={contact.id} className={`transition-colors group ${selectedContacts.has(contact.id) ? 'bg-primary/10' : 'hover:bg-slate-800/40'}`}>
                     <td className="px-4 py-3 border-r border-slate-800/50 align-top">
                       <input
@@ -547,16 +661,44 @@ export default function ContactsDirectory() {
           <DialogHeader><DialogTitle>Edit Contact Details</DialogTitle></DialogHeader>
 
           <div className="space-y-4 py-4 overflow-y-auto scrollbar-thin px-1">
-            <div className="space-y-2"><Label>Name</Label><Input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
-            <div className="space-y-2"><Label>Phone</Label><Input value={editForm.phone} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
-            <div className="space-y-2"><Label>Email</Label><Input value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
-            <div className="space-y-2"><Label>Company</Label><Input value={editForm.company} onChange={e => setEditForm({ ...editForm, company: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+            <div className="space-y-2"><Label className="text-slate-400">Name</Label><Input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+            <div className="space-y-2"><Label className="text-slate-400">Phone</Label><Input value={editForm.phone} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+            <div className="space-y-2"><Label className="text-slate-400">Email</Label><Input value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+            <div className="space-y-2"><Label className="text-slate-400">Company</Label><Input value={editForm.company} onChange={e => setEditForm({ ...editForm, company: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+
+            {/* Tag Selection UI */}
+            {allTags.length > 0 && (
+              <div className="pt-2">
+                <Label className="text-slate-400 mb-2 block">Automation Tags</Label>
+                <div className="flex flex-wrap gap-2">
+                  {allTags.map(tag => {
+                    const isSelected = editForm.tags.includes(tag.id);
+                    return (
+                      <div
+                        key={tag.id}
+                        onClick={() => setEditForm(prev => ({
+                          ...prev, tags: isSelected ? prev.tags.filter(t => t !== tag.id) : [...prev.tags, tag.id]
+                        }))}
+                        className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors border select-none"
+                        style={{
+                          backgroundColor: isSelected ? `${tag.color}30` : 'transparent',
+                          borderColor: isSelected ? tag.color : '#334155',
+                          color: isSelected ? '#fff' : '#94a3b8'
+                        }}
+                      >
+                        {tag.name}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {customFields.length > 0 && <div className="border-t border-slate-800 my-4 pt-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Custom Fields</div>}
 
             {customFields.map(cf => (
               <div key={cf.id} className="space-y-2">
-                <Label>{cf.field_name}</Label>
+                <Label className="text-slate-400">{cf.field_name}</Label>
                 <textarea
                   value={editForm.custom_values[cf.id] || ''}
                   onChange={e => setEditForm(prev => ({ ...prev, custom_values: { ...prev.custom_values, [cf.id]: e.target.value } }))}
@@ -567,7 +709,7 @@ export default function ContactsDirectory() {
             ))}
           </div>
 
-          <DialogFooter className="pt-2">
+          <DialogFooter className="pt-2 border-t border-slate-800 mt-2">
             <Button variant="outline" onClick={() => setEditingContact(null)} className="border-slate-700 text-slate-300 hover:bg-slate-800">Cancel</Button>
             <Button onClick={saveContactEdit} className="bg-primary hover:bg-primary/90 text-white">Save Changes</Button>
           </DialogFooter>
