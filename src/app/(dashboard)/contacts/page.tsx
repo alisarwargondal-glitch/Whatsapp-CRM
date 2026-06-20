@@ -53,6 +53,17 @@ import { GatedButton } from '@/components/ui/gated-button';
 
 const PAGE_SIZE = 25;
 
+useEffect(() => {
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').then(
+        (registration) => console.log('CRM App Engine registered successfully: ', registration.scope),
+        (err) => console.log('ServiceWorker registration failed: ', err)
+      );
+    });
+  }
+}, []);
+
 interface ContactWithTags extends Contact {
   tags?: Tag[];
 }
