@@ -296,14 +296,12 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
       const existingPhoneMap = new Map<string, string>();
       existingRows?.forEach(r => {
-        // FIX: Re-index keys cleanly utilizing identical digits-only substitution matches
         if (r.phone_normalized) existingPhoneMap.set(r.phone_normalized.replace(/\D/g, ''), r.id);
         if (r.phone) existingPhoneMap.set(r.phone.replace(/\D/g, ''), r.id);
       });
 
       for (const row of unique) {
         try {
-          // FIX: Align normalization directly with database rules
           const normalizedPhone = row.phone.replace(/\D/g, '');
           let contactId = existingPhoneMap.get(normalizedPhone);
 
@@ -341,7 +339,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                 skipped++;
                 continue;
               }
-              // FIX: If a limit error is hit, track it without crashing the rest of the file
               if (contactErr.message?.includes('limit') || contactErr.code === 'P0001') {
                 limitReachedOccurred = true;
                 failed++;
@@ -402,7 +399,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         message = String(err);
       }
       toast.error(`Import Error Details: ${message}`, { duration: 15000 });
-    } finaly {
+    } finally {
       setImporting(false);
     }
   }
