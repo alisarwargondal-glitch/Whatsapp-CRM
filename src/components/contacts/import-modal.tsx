@@ -320,10 +320,12 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
               });
             }
           } else {
+            // FIX: Manually compute and append the text sequence to fulfill Postgres constraints
             const contactPayload: Record<string, any> = {
               user_id: user.id,
               account_id: accountId,
               phone: row.phone,
+              phone_normalized: normalizedPhone,
               name: row.name || null,
               email: row.email || null,
             };
