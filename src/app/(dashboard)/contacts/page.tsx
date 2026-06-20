@@ -3,11 +3,10 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { Folder, Users, ArrowLeft, Settings2, Search } from 'lucide-react';
+import { Folder, Users, ArrowLeft, Settings2, Search, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-// Define our strict types based on your schema
 interface FolderTag {
   id: string;
   name: string;
@@ -33,16 +32,12 @@ export default function ContactsDirectory() {
   const supabase = createClient();
   const { accountId } = useAuth();
 
-  // Navigation State
   const [activeFolder, setActiveFolder] = useState<FolderTag | null>(null);
-
-  // Data State
   const [folders, setFolders] = useState<FolderTag[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Column Visibility State
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
     phone: true,
     name: true,
@@ -51,13 +46,11 @@ export default function ContactsDirectory() {
   });
   const [showColumnMenu, setShowColumnMenu] = useState(false);
 
-  // 1. Fetch Folders (Tags) on initial load
   useEffect(() => {
     if (!accountId) return;
 
     async function loadFolders() {
       setLoading(true);
-      // Fetch tags and the count of contacts inside them
       const { data: tagsData } = await supabase
         .from('tags')
         .select('id, name, color')
@@ -65,11 +58,9 @@ export default function ContactsDirectory() {
         .order('name');
 
       if (tagsData) {
-        // Optional: You can do a separate count query here if you want to show contact counts on the folders
         setFolders(tagsData);
       }
 
-      // Load custom fields to populate the column toggles
       const { data: fieldsData } = await supabase
         .from('custom_fields')
         .select('id, field_name')
@@ -77,7 +68,6 @@ export default function ContactsDirectory() {
 
       if (fieldsData) {
         setCustomFields(fieldsData);
-        // Add custom fields to our visibility state (default to true)
         const newCols = { ...visibleColumns };
         fieldsData.forEach(field => {
           if (newCols[field.id] === undefined) newCols[field.id] = true;
@@ -88,16 +78,15 @@ export default function ContactsDirectory() {
     }
 
     loadFolders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, supabase]);
 
-  // 2. Fetch Contacts when a Folder is clicked
   useEffect(() => {
     if (!activeFolder || !accountId) return;
 
     async function loadFolderContacts() {
       setLoading(true);
 
-      // Fetch links
       const { data: links } = await supabase
         .from('contact_tags')
         .select('contact_id')
@@ -111,19 +100,16 @@ export default function ContactsDirectory() {
 
       const contactIds = links.map(l => l.contact_id);
 
-      // Fetch actual contacts
       const { data: contactsData } = await supabase
         .from('contacts')
         .select('*')
         .in('id', contactIds);
 
-      // Fetch custom values for these contacts
       const { data: customValuesData } = await supabase
         .from('contact_custom_values')
         .select('*')
         .in('contact_id', contactIds);
 
-      // Map custom values into the contact objects
       if (contactsData) {
         const formattedContacts = contactsData.map(c => {
           const cVals = customValuesData?.filter(cv => cv.contact_id === c.id) || [];
@@ -145,7 +131,6 @@ export default function ContactsDirectory() {
     setVisibleColumns(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // --- VIEW 1: FOLDER GRID ---
   if (!activeFolder) {
     return (
       <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -157,7 +142,9 @@ export default function ContactsDirectory() {
         </div>
 
         {loading ? (
-          <div className="flex justify-center p-12"><Loader2 className="size-8 animate-spin text-primary" /></div>
+          <div className="flex justify-center p-12">
+            <Loader2 className="size-8 animate-spin text-primary" />
+          </div>
         ) : folders.length === 0 ? (
           <div className="text-center py-20 border border-dashed border-slate-700 rounded-xl bg-slate-900/50">
             <Folder className="size-12 text-slate-600 mx-auto mb-3" />
@@ -191,10 +178,8 @@ export default function ContactsDirectory() {
     );
   }
 
-  // --- VIEW 2: INSIDE A FOLDER ---
   return (
     <div className="p-6 max-w-[100vw] mx-auto space-y-4 flex flex-col h-screen">
-      {/* Header Bar */}
       <div className="flex justify-between items-center bg-slate-900 p-4 rounded-xl border border-slate-800 shrink-0">
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="icon" onClick={() => setActiveFolder(null)} className="text-slate-400 hover:text-white">
@@ -215,7 +200,6 @@ export default function ContactsDirectory() {
             <Input placeholder="Search..." className="w-64 pl-9 bg-slate-950 border-slate-700 text-sm" />
           </div>
 
-          {/* Column Visibility Filter */}
           <div className="relative">
             <Button
               variant="outline"
@@ -233,7 +217,7 @@ export default function ContactsDirectory() {
                     <label key={key} className="flex items-center gap-2 p-2 hover:bg-slate-800 rounded cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={visibleColumns[key]}
+                        checked={visibleColumns[key] || false}
                         onChange={() => toggleColumn(key)}
                         className="rounded border-slate-600 bg-slate-900 text-primary focus:ring-primary"
                       />
@@ -244,7 +228,7 @@ export default function ContactsDirectory() {
                     <label key={cf.id} className="flex items-center gap-2 p-2 hover:bg-slate-800 rounded cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={visibleColumns[cf.id]}
+                        checked={visibleColumns[cf.id] || false}
                         onChange={() => toggleColumn(cf.id)}
                         className="rounded border-slate-600 bg-slate-900 text-primary focus:ring-primary"
                       />
@@ -258,10 +242,11 @@ export default function ContactsDirectory() {
         </div>
       </div>
 
-      {/* Resizable Data Table */}
       <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col relative">
         {loading ? (
-          <div className="flex-1 flex justify-center items-center"><Loader2 className="size-8 animate-spin text-primary" /></div>
+          <div className="flex-1 flex justify-center items-center">
+            <Loader2 className="size-8 animate-spin text-primary" />
+          </div>
         ) : contacts.length === 0 ? (
           <div className="flex-1 flex flex-col justify-center items-center text-slate-500">
             <Users className="size-10 mb-2 opacity-50" />
