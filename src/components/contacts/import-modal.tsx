@@ -3,7 +3,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { dedupeByPhone } from '@/lib/contacts/dedupe';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -253,7 +252,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
-        // FIX: Explicitly append user_id parameter to satisfy relational constraints
         const { data: newTag, error: tagErr } = await supabase
           .from('tags')
           .insert({
@@ -288,7 +286,23 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       let failed = 0;
       let limitReachedOccurred = false;
 
-      const { unique, duplicates: inFileDupes } = dedupeByPhone(parsedRows);
+      // FIX: 100% Inline Native Deduplication (No external dependencies to crash)
+      const uniqueRows: ParsedRow[] = [];
+      const seenPhones = new Set<string>();
+      let inFileDupes = 0;
+
+      for (const row of parsedRows) {
+        if (!row.phone || typeof row.phone !== 'string') continue;
+        const normalized = row.phone.replace(/\D/g, ''); // Digits only
+        if (!normalized) continue;
+
+        if (seenPhones.has(normalized)) {
+          inFileDupes++;
+        } else {
+          seenPhones.add(normalized);
+          uniqueRows.push({ ...row, phone: normalized });
+        }
+      }
       skipped += inFileDupes;
 
       const { data: existingRows } = await supabase
@@ -298,13 +312,17 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
       const existingPhoneMap = new Map<string, string>();
       existingRows?.forEach(r => {
-        if (r.phone_normalized) existingPhoneMap.set(r.phone_normalized.replace(/\D/g, ''), r.id);
-        if (r.phone) existingPhoneMap.set(r.phone.replace(/\D/g, ''), r.id);
+        if (r.phone_normalized && typeof r.phone_normalized === 'string') {
+          existingPhoneMap.set(r.phone_normalized.replace(/\D/g, ''), r.id);
+        }
+        if (r.phone && typeof r.phone === 'string') {
+          existingPhoneMap.set(r.phone.replace(/\D/g, ''), r.id);
+        }
       });
 
-      for (const row of unique) {
+      for (const row of uniqueRows) {
         try {
-          const normalizedPhone = row.phone.replace(/\D/g, '');
+          const normalizedPhone = row.phone; // Already strictly numbers
           let contactId = existingPhoneMap.get(normalizedPhone);
 
           if (contactId) {
@@ -347,6 +365,12 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                 failed++;
                 continue;
               }
+
+              // FIX: If any other DB error happens, log it and show exactly why!
+              console.error("Row Database Insert Error:", contactErr);
+              toast.error(`Insert Error: ${contactErr.message}`, { id: 'db-error' });
+              failed++;
+              continue;
             }
 
             if (!contactErr && newContact?.id) {
