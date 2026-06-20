@@ -298,7 +298,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
         if (contactId) {
           skipped++;
-          // Safe handling for duplicates: check if relationship tag link already exists first
           const { data: existingLink } = await supabase
             .from('contact_tags')
             .select('contact_id')
