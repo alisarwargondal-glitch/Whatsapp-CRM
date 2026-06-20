@@ -53,17 +53,6 @@ import { GatedButton } from '@/components/ui/gated-button';
 
 const PAGE_SIZE = 25;
 
-useEffect(() => {
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/sw.js').then(
-        (registration) => console.log('CRM App Engine registered successfully: ', registration.scope),
-        (err) => console.log('ServiceWorker registration failed: ', err)
-      );
-    });
-  }
-}, []);
-
 interface ContactWithTags extends Contact {
   tags?: Tag[];
 }
@@ -79,7 +68,7 @@ export default function ContactsPage() {
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
 
-  // Bulk Operations Selection State Tracker
+  // Bulk Operations State Trackers
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -96,7 +85,6 @@ export default function ContactsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // All tags for display
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
 
   const fetchTags = useCallback(async () => {
@@ -110,7 +98,6 @@ export default function ContactsPage() {
 
   const fetchContacts = useCallback(async () => {
     setLoading(true);
-    // Clear selection queues when changing data contexts or reload occurs
     setSelectedContactIds([]);
 
     const from = page * PAGE_SIZE;
@@ -174,17 +161,17 @@ export default function ContactsPage() {
     fetchContacts();
   }, [fetchContacts]);
 
-  // Checkbox Selection Logic Utilities
+  // Bulk Checkbox Toggles
   const handleSelectAllToggle = () => {
-    if (selectedContactIds.length === contacts.length) {
+    if (contacts.length > 0 && selectedContactIds.length === contacts.length) {
       setSelectedContactIds([]);
     } else {
       setSelectedContactIds(contacts.map((c) => c.id));
     }
   };
 
-  const handleSelectRowToggle = (contactId: string, event: React.MouseEvent) => {
-    event.stopPropagation(); // Stops table sheet dialog expansion triggers
+  const handleSelectRowToggle = (contactId: string, event: React.ChangeEvent<HTMLInputElement>) => {
+    event.stopPropagation();
     setSelectedContactIds((prev) =>
       prev.includes(contactId) ? prev.filter((id) => id !== contactId) : [...prev, contactId]
     );
@@ -200,9 +187,9 @@ export default function ContactsPage() {
       .in('id', selectedContactIds);
 
     if (error) {
-      toast.error('Failed to delete selected contacts group');
+      toast.error('Failed to delete selected contacts');
     } else {
-      toast.success(`Successfully removed ${selectedContactIds.length} contact records`);
+      toast.success(`Successfully deleted ${selectedContactIds.length} contacts`);
       setSelectedContactIds([]);
       fetchContacts();
     }
@@ -263,7 +250,7 @@ export default function ContactsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header Panel */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Contacts</h1>
@@ -304,9 +291,9 @@ export default function ContactsPage() {
         </div>
       </div>
 
-      {/* Sub-Header Toolbar: Switch seamlessly between Search Panel and Sticky Bulk Action Panel */}
+      {/* Action Toolbar Context */}
       {selectedContactIds.length > 0 ? (
-        <div className="flex items-center justify-between rounded-xl border border-blue-500/20 bg-blue-500/10 px-4 py-3 animate-in fade-in slide-in-from-top-1 duration-200">
+        <div className="flex items-center justify-between rounded-xl border border-blue-500/20 bg-blue-500/10 px-4 py-3 animate-in fade-in duration-150">
           <div className="flex items-center gap-2 text-sm text-blue-400 font-medium">
             <CheckSquare className="size-4" />
             <span>Selected {selectedContactIds.length} contact{selectedContactIds.length !== 1 ? 's' : ''}</span>
@@ -336,7 +323,7 @@ export default function ContactsPage() {
         </div>
       )}
 
-      {/* Contacts Table Wrapper Sheet */}
+      {/* Main Table Layout */}
       <div className="rounded-lg border border-slate-800 overflow-hidden bg-slate-950/20 shadow-xl">
         <Table>
           <TableHeader>
@@ -347,6 +334,7 @@ export default function ContactsPage() {
                   checked={contacts.length > 0 && selectedContactIds.length === contacts.length}
                   onChange={handleSelectAllToggle}
                   className="rounded border-slate-700 bg-slate-900 text-primary focus:ring-primary size-4 accent-primary cursor-pointer"
+                  style={{ display: 'inline-block', verticalAlign: 'middle' }}
                 />
               </TableHead>
               <TableHead className="text-slate-400">Name</TableHead>
@@ -376,17 +364,6 @@ export default function ContactsPage() {
                     <p className="text-sm text-slate-500">
                       {search ? 'No contacts match your search.' : 'No contacts yet.'}
                     </p>
-                    {!search && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={openAddForm}
-                        className="mt-2 border-slate-700 text-slate-300 hover:bg-slate-800"
-                      >
-                        <Plus className="size-3.5" />
-                        Add your first contact
-                      </Button>
-                    )}
                   </div>
                 </TableCell>
               </TableRow>
@@ -400,16 +377,16 @@ export default function ContactsPage() {
                       }`}
                     onClick={() => openDetail(contact.id)}
                   >
-                    {/* Native Table Checkbox Selection Input Block */}
                     <TableCell
                       className="text-center px-4"
-                      onClick={(e) => handleSelectRowToggle(contact.id, e)}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       <input
                         type="checkbox"
                         checked={isSelected}
-                        onChange={() => { }} // Controlled entirely via cell box context intercept click handler
+                        onChange={(e) => handleSelectRowToggle(contact.id, e)}
                         className="rounded border-slate-700 bg-slate-900 text-primary focus:ring-primary size-4 accent-primary cursor-pointer"
+                        style={{ display: 'inline-block', verticalAlign: 'middle' }}
                       />
                     </TableCell>
                     <TableCell className="text-white font-medium">
@@ -441,11 +418,6 @@ export default function ContactsPage() {
                           ))
                         ) : (
                           <span className="text-slate-600 text-xs">-</span>
-                        )}
-                        {contact.tags && contact.tags.length > 3 && (
-                          <span className="text-[10px] text-slate-500">
-                            +{contact.tags.length - 3}
-                          </span>
                         )}
                       </div>
                     </TableCell>
@@ -499,7 +471,7 @@ export default function ContactsPage() {
         </Table>
       </div>
 
-      {/* Pagination View Sections */}
+      {/* Pagination View */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-500">
@@ -532,7 +504,7 @@ export default function ContactsPage() {
         </div>
       )}
 
-      {/* Contact Modification Wizard Forms */}
+      {/* Dialog Modals Configuration Set */}
       <ContactForm
         open={formOpen}
         onOpenChange={setFormOpen}
@@ -568,7 +540,7 @@ export default function ContactsPage() {
         />
       )}
 
-      {/* Bulk Delete Group Confirmation Alert Dialog Box */}
+      {/* Bulk Delete Dialog */}
       <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
         <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 sm:max-w-sm">
           <DialogHeader>
@@ -580,7 +552,7 @@ export default function ContactsPage() {
               <span className="text-red-400 font-bold font-mono">
                 {selectedContactIds.length}
               </span>{' '}
-              selected contact profiles? This cleanup cannot be rolled back.
+              selected contact profiles? This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="bg-slate-900 border-slate-700 pt-2">
@@ -604,7 +576,7 @@ export default function ContactsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Individual Row Single Delete Box */}
+      {/* Single Delete Confirmation */}
       <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
         <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 sm:max-w-sm">
           <DialogHeader>
