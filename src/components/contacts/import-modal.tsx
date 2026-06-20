@@ -256,21 +256,28 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
-        // FIX: Relax data return formatting checks to pull arrays safely
-        const { data: createdTags, error: tagErr } = await supabase
+        // Inserts tag safely
+        const { error: tagErr } = await supabase
           .from('tags')
           .insert({
             account_id: accountId,
             name: cleanFolderName,
             color: randomColor
-          })
-          .select('id');
+          });
 
         if (tagErr) throw tagErr;
-        if (!createdTags || createdTags.length === 0) {
-          throw new Error('Failed to instantiate group directory target reference descriptor.');
+
+        // Re-queries to get the safe record without relying on return pointers
+        const { data: verifiedTags } = await supabase
+          .from('tags')
+          .select('id')
+          .eq('account_id', accountId)
+          .ilike('name', cleanFolderName);
+
+        if (!verifiedTags || verifiedTags.length === 0) {
+          throw new Error('Folder reference initialization error.');
         }
-        targetTagId = createdTags[0].id;
+        targetTagId = verifiedTags[0].id;
       }
 
       let imported = 0;
@@ -319,19 +326,25 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
               email: row.email || null,
             };
 
-            const { data: createdContacts, error } = await supabase
+            const { error: insertErr } = await supabase
               .from('contacts')
-              .insert(contactPayload)
-              .select('id');
+              .insert(contactPayload);
 
-            if (error && (error.code === '23505' || error.message?.includes('unique'))) {
+            if (insertErr && (insertErr.code === '23505' || insertErr.message?.includes('unique'))) {
               skipped++;
               continue;
             }
 
-            if (!error && createdContacts && createdContacts.length > 0) {
+            // Fetches the newly generated contact record back from database references safely
+            const { data: verifiedContacts } = await supabase
+              .from('contacts')
+              .select('id')
+              .eq('account_id', accountId)
+              .eq('phone', row.phone);
+
+            if (!insertErr && verifiedContacts && verifiedContacts.length > 0) {
               imported++;
-              contactId = createdContacts[0].id;
+              contactId = verifiedContacts[0].id;
               await insertContactCustomFields(contactId, row.customFieldsMap);
               await supabase.from('contact_tags').insert({
                 contact_id: contactId,
