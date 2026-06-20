@@ -244,15 +244,15 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       let targetTagId = '';
       const cleanFolderName = folderName.trim();
 
-      const { data: existingTag } = await supabase
+      // FIX: Use simple .select() array checking instead of strict single item matching
+      const { data: existingTags } = await supabase
         .from('tags')
         .select('id')
         .eq('account_id', accountId)
-        .ilike('name', cleanFolderName)
-        .maybeSingle();
+        .ilike('name', cleanFolderName);
 
-      if (existingTag) {
-        targetTagId = existingTag.id;
+      if (existingTags && existingTags.length > 0) {
+        targetTagId = existingTags[0].id;
       } else {
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
@@ -290,21 +290,19 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       });
 
       for (const row of unique) {
-        // Wrap loops inside isolated try/catch processing frames to prevent list crashes
         try {
           const normalizedPhone = normalizeKey(row.phone);
           let contactId = existingPhoneMap.get(normalizedPhone);
 
           if (contactId) {
             skipped++;
-            const { data: existingLink } = await supabase
+            const { data: existingLinks } = await supabase
               .from('contact_tags')
               .select('contact_id')
               .eq('contact_id', contactId)
-              .eq('tag_id', targetTagId)
-              .maybeSingle();
+              .eq('tag_id', targetTagId);
 
-            if (!existingLink) {
+            if (!existingLinks || existingLinks.length === 0) {
               await supabase.from('contact_tags').insert({
                 contact_id: contactId,
                 tag_id: targetTagId
@@ -325,7 +323,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
               .select('id')
               .maybeSingle();
 
-            // Treat runtime unique schema violations as duplicates dynamically rather than crashing
             if (error && (error.code === '23505' || error.message?.includes('unique'))) {
               skipped++;
               continue;
