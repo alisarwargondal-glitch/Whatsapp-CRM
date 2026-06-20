@@ -23,10 +23,16 @@ import {
 } from "lucide-react";
 import { extractVariableIndices } from "@/lib/whatsapp/template-validators";
 
+// Extended message template interface to safely intercept native array text variations
+interface MessageTemplateWithVariations extends MessageTemplate {
+  text_variations?: string[];
+}
+
 export interface TemplateSendValues {
   body: string[];
   headerText?: string;
   buttonParams?: Record<number, string>;
+  variationIndex?: number;
 }
 
 interface TemplatePickerProps {
@@ -49,17 +55,12 @@ interface UrlButtonSlot {
   url: string;
 }
 
-/**
- * Templates may need values for: body variables, a text-header
- * variable, and per-URL-button suffixes. Collect them all so the
- * send-message path doesn't 400 on missing parameters.
- */
-function collectVariableSlots(template: MessageTemplate): {
+function collectVariableSlots(bodyText: string, template: MessageTemplate): {
   bodyVars: number[];
   headerVarCount: number;
   urlButtonSlots: UrlButtonSlot[];
 } {
-  const bodyVars = extractVariableIndices(template.body_text);
+  const bodyVars = extractVariableIndices(bodyText || "");
   const headerVarCount =
     template.header_type === "text" && template.header_content
       ? extractVariableIndices(template.header_content).length
@@ -78,9 +79,10 @@ export function TemplatePicker({
   onOpenChange,
   onSelect,
 }: TemplatePickerProps) {
-  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [templates, setTemplates] = useState<MessageTemplateWithVariations[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<MessageTemplate | null>(null);
+  const [selected, setSelected] = useState<MessageTemplateWithVariations | null>(null);
+  const [selectedVariationIdx, setSelectedVariationIdx] = useState<number>(0);
   const [params, setParams] = useState<string[]>([]);
   const [headerText, setHeaderText] = useState<string>("");
   const [buttonParams, setButtonParams] = useState<Record<number, string>>({});
@@ -116,7 +118,7 @@ export function TemplatePicker({
         console.error("Failed to fetch templates:", error);
         setTemplates([]);
       } else {
-        setTemplates((data as MessageTemplate[]) ?? []);
+        setTemplates((data as MessageTemplateWithVariations[]) ?? []);
       }
       setLoading(false);
     })();
@@ -126,8 +128,31 @@ export function TemplatePicker({
     };
   }, [open]);
 
+  // Dynamically extract the specific textual version body being adjusted
+  const activeBodyText = useMemo(() => {
+    if (!selected) return "";
+    if (selected.text_variations && selected.text_variations.length > 0) {
+      return selected.text_variations[selectedVariationIdx] || selected.body_text;
+    }
+    return selected.body_text;
+  }, [selected, selectedVariationIdx]);
+
+  // Collect dynamic structure variables based entirely on the targeted variation's textual context
+  const slots = useMemo(() => {
+    if (!selected) return null;
+    return collectVariableSlots(activeBodyText, selected);
+  }, [selected, activeBodyText]);
+
+  // Adjust parameters array whenever slots shift during alternative version switches
+  useEffect(() => {
+    if (slots) {
+      setParams(new Array(slots.bodyVars.length).fill(""));
+    }
+  }, [slots]);
+
   function resetSelection() {
     setSelected(null);
+    setSelectedVariationIdx(0);
     setParams([]);
     setHeaderText("");
     setButtonParams({});
@@ -138,26 +163,23 @@ export function TemplatePicker({
     onOpenChange(next);
   }
 
-  function pickTemplate(template: MessageTemplate) {
-    const slots = collectVariableSlots(template);
-    const noInputsNeeded =
-      slots.bodyVars.length === 0 &&
-      slots.headerVarCount === 0 &&
-      slots.urlButtonSlots.length === 0;
-    if (noInputsNeeded) {
-      onSelect(template, { body: [] });
-      handleOpenChange(false);
-      return;
-    }
+  function pickTemplate(template: MessageTemplateWithVariations) {
     setSelected(template);
-    setParams(new Array(slots.bodyVars.length).fill(""));
+    setSelectedVariationIdx(0);
+    const primaryText = template.text_variations?.[0] || template.body_text;
+    const primarySlots = collectVariableSlots(primaryText, template);
+
+    setParams(new Array(primarySlots.bodyVars.length).fill(""));
     setHeaderText("");
     setButtonParams({});
   }
 
   function confirm() {
     if (!selected) return;
-    const values: TemplateSendValues = { body: params };
+    const values: TemplateSendValues = {
+      body: params,
+      variationIndex: selected.text_variations ? selectedVariationIdx : undefined
+    };
     if (headerText.trim()) values.headerText = headerText.trim();
     if (Object.keys(buttonParams).length > 0) {
       values.buttonParams = Object.fromEntries(
@@ -168,10 +190,6 @@ export function TemplatePicker({
     handleOpenChange(false);
   }
 
-  const slots = useMemo(
-    () => (selected ? collectVariableSlots(selected) : null),
-    [selected],
-  );
   const canConfirm =
     !!selected &&
     !!slots &&
@@ -232,6 +250,11 @@ export function TemplatePicker({
                             {t.language}
                           </span>
                         )}
+                        {t.text_variations && t.text_variations.length > 1 && (
+                          <Badge variant="outline" className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-400">
+                            {t.text_variations.length} Variations
+                          </Badge>
+                        )}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-slate-400">
                         {t.body_text}
@@ -244,11 +267,29 @@ export function TemplatePicker({
             )}
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-4">
+            {/* Variation Selector Dropdown Interface */}
+            {selected.text_variations && selected.text_variations.length > 1 && (
+              <div className="space-y-1.5 rounded-md border border-amber-500/20 bg-amber-500/5 p-3">
+                <Label className="text-xs font-semibold text-amber-400">Select Template Text Variation</Label>
+                <select
+                  value={selectedVariationIdx}
+                  onChange={(e) => setSelectedVariationIdx(Number(e.target.value))}
+                  className="w-full rounded-md border border-slate-700 bg-slate-800 p-2 text-sm text-white focus:border-primary focus:outline-none"
+                >
+                  {selected.text_variations.map((_, index) => (
+                    <option key={index} value={index}>
+                      Variation #{index + 1} {index === 0 ? "(Primary Structure)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="rounded-md border border-slate-800 bg-slate-950/50 p-3">
               <p className="mb-1 text-xs text-slate-400">Preview</p>
               <p className="whitespace-pre-wrap text-sm text-slate-200">
-                {renderBodyPreview(selected.body_text, params)}
+                {renderBodyPreview(activeBodyText, params)}
               </p>
               {selected.footer_text && (
                 <p className="mt-2 text-xs italic text-slate-500">
@@ -256,6 +297,7 @@ export function TemplatePicker({
                 </p>
               )}
             </div>
+
             {slots && slots.headerVarCount > 0 && (
               <div className="space-y-1">
                 <Label className="text-xs text-slate-300">
@@ -269,6 +311,7 @@ export function TemplatePicker({
                 />
               </div>
             )}
+
             {slots?.bodyVars.map((v, i) => (
               <div key={v} className="space-y-1">
                 <Label className="text-xs text-slate-300">{`Body {{${v}}}`}</Label>
@@ -284,6 +327,7 @@ export function TemplatePicker({
                 />
               </div>
             ))}
+
             {slots?.urlButtonSlots.map((slot) => (
               <div key={slot.index} className="space-y-1">
                 <Label className="text-xs text-slate-300">
