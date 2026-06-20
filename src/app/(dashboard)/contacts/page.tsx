@@ -71,7 +71,7 @@ export default function ContactsDirectory() {
     setSelectedContacts(new Set());
   }, [activeFolder]);
 
-  // 1. Fetch Folders & Setup Memory State
+  // 1. Fetch Folders & Setup Memory State (FIXED: Missing Custom Fields)
   useEffect(() => {
     if (!accountId) return;
     async function loadFolders() {
@@ -98,13 +98,22 @@ export default function ContactsDirectory() {
           newOrder.push(field.id);
         });
 
-        // Pull saved adjustments from Browser LocalStorage!
+        // Pull saved adjustments from Browser LocalStorage
         const savedOrder = localStorage.getItem('crm_col_order');
         const savedVis = localStorage.getItem('crm_col_vis');
         const savedWidths = localStorage.getItem('crm_col_widths');
 
-        if (savedOrder) newOrder = JSON.parse(savedOrder);
-        if (savedVis) newCols = { ...newCols, ...JSON.parse(savedVis) };
+        if (savedOrder) {
+          const parsedOrder = JSON.parse(savedOrder);
+          // FIX: Intelligently merge the saved order but append any new custom fields that were missing
+          const missingFields = newOrder.filter(col => !parsedOrder.includes(col));
+          newOrder = [...parsedOrder, ...missingFields];
+        }
+
+        if (savedVis) {
+          newCols = { ...newCols, ...JSON.parse(savedVis) };
+        }
+
         if (savedWidths) setColumnWidths(JSON.parse(savedWidths));
 
         setVisibleColumns(newCols);
@@ -210,7 +219,6 @@ export default function ContactsDirectory() {
   async function saveContactEdit() {
     if (!editingContact) return;
 
-    // 1. Update Base Fields
     const { error: baseError } = await supabase
       .from('contacts')
       .update({ name: editForm.name, phone: editForm.phone, email: editForm.email, company: editForm.company })
@@ -221,7 +229,6 @@ export default function ContactsDirectory() {
       return;
     }
 
-    // 2. Update Custom Fields 
     const customValuesArray = Object.entries(editForm.custom_values).map(([id, val]) => ({
       contact_id: editingContact.id,
       custom_field_id: id,
@@ -258,11 +265,20 @@ export default function ContactsDirectory() {
     setColumnOrder(newOrder);
   };
 
-  // Captures the new width immediately after you drag the column line
   const handleColumnResize = (colId: string, e: React.MouseEvent<HTMLTableCellElement>) => {
     const newWidth = e.currentTarget.offsetWidth;
     setColumnWidths(prev => {
       const next = { ...prev, [colId]: newWidth };
+      localStorage.setItem('crm_col_widths', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  // FIX: Double click perfectly auto-snaps the column back to content size
+  const handleDoubleClickResize = (colId: string) => {
+    setColumnWidths(prev => {
+      const next = { ...prev };
+      delete next[colId]; // Deleting the saved width forces it to auto-size
       localStorage.setItem('crm_col_widths', JSON.stringify(next));
       return next;
     });
@@ -273,9 +289,8 @@ export default function ContactsDirectory() {
     return customFields.find(cf => cf.id === colId)?.field_name || colId;
   }
 
-  // Render cell contents wrapped natively!
   function renderCellContent(contact: Contact, col: string) {
-    const baseClasses = "block whitespace-normal break-words leading-relaxed py-1";
+    const baseClasses = "block whitespace-normal break-words leading-relaxed py-1 min-w-[120px]";
     switch (col) {
       case 'name': return <span className={`text-white font-medium ${baseClasses}`}>{contact.name || '-'}</span>;
       case 'phone': return <span className={`text-slate-300 font-mono ${baseClasses}`}>{contact.phone}</span>;
@@ -341,6 +356,8 @@ export default function ContactsDirectory() {
   }
 
   const visibleOrderedCols = columnOrder.filter(col => visibleColumns[col]);
+  const defaultCols = ['name', 'phone', 'email', 'company'];
+  const customCols = columnOrder.filter(col => !defaultCols.includes(col));
 
   return (
     <div className="p-6 max-w-[100vw] mx-auto space-y-4 flex flex-col h-screen">
@@ -359,7 +376,6 @@ export default function ContactsDirectory() {
         </div>
 
         <div className="flex items-center gap-3 relative">
-          {/* Show Mass Action Delete Button if Contacts are selected */}
           {selectedContacts.size > 0 && (
             <Button variant="destructive" onClick={handleBulkDelete} className="bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white border border-red-500/30">
               <Trash2 className="size-4 mr-2" /> Delete ({selectedContacts.size})
@@ -376,11 +392,21 @@ export default function ContactsDirectory() {
               <Settings2 className="size-4 mr-2" /> Columns
             </Button>
             {showColumnMenu && (
-              <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 p-2 overflow-hidden">
-                <div className="text-xs font-semibold text-slate-400 uppercase px-2 mb-2">Display Fields</div>
-                <div className="max-h-[300px] overflow-y-auto space-y-1 scrollbar-thin">
-                  {columnOrder.map(col => (
-                    <label key={col} className="flex items-center gap-2 p-2 hover:bg-slate-800 rounded cursor-pointer">
+              <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 p-2 overflow-hidden flex flex-col">
+                <div className="text-xs font-semibold text-slate-400 uppercase px-2 mb-2 pt-2">Default Fields</div>
+                <div className="max-h-[300px] overflow-y-auto space-y-1 scrollbar-thin pb-2">
+                  {/* Default Fields Group */}
+                  {defaultCols.map(col => (
+                    <label key={col} className="flex items-center gap-2 p-2 mx-1 hover:bg-slate-800 rounded cursor-pointer">
+                      <input type="checkbox" checked={visibleColumns[col] || false} onChange={() => setVisibleColumns(p => ({ ...p, [col]: !p[col] }))} className="rounded border-slate-600 text-primary focus:ring-primary bg-slate-900" />
+                      <span className="text-sm text-slate-300 truncate">{getColumnLabel(col)}</span>
+                    </label>
+                  ))}
+
+                  {/* Custom Fields Group */}
+                  {customCols.length > 0 && <div className="text-xs font-semibold text-slate-400 uppercase px-2 pt-2 pb-1 border-t border-slate-800 mt-1">Custom Fields</div>}
+                  {customCols.map(col => (
+                    <label key={col} className="flex items-center gap-2 p-2 mx-1 hover:bg-slate-800 rounded cursor-pointer">
                       <input type="checkbox" checked={visibleColumns[col] || false} onChange={() => setVisibleColumns(p => ({ ...p, [col]: !p[col] }))} className="rounded border-slate-600 text-primary focus:ring-primary bg-slate-900" />
                       <span className="text-sm text-slate-300 truncate">{getColumnLabel(col)}</span>
                     </label>
@@ -402,11 +428,9 @@ export default function ContactsDirectory() {
           </div>
         ) : (
           <div className="flex-1 overflow-auto scrollbar-thin w-full">
-            {/* Table layout set to fixed to force accurate resizing and wrapping */}
             <table className="w-full text-sm text-left table-fixed border-collapse min-w-[800px]">
               <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10">
                 <tr>
-                  {/* Select All Checkbox Header */}
                   <th className="px-4 py-3 border-r border-slate-800/50 w-[50px] shrink-0 align-top">
                     <input
                       type="checkbox"
@@ -424,8 +448,9 @@ export default function ContactsDirectory() {
                       style={{
                         resize: 'horizontal',
                         overflow: 'hidden',
-                        width: columnWidths[col] || 200,
-                        minWidth: 100
+                        width: columnWidths[col] || 'auto', // Defaults to auto-fit
+                        minWidth: 150, // Anti-squish protection
+                        maxWidth: 800
                       }}
                     >
                       <div
@@ -433,7 +458,9 @@ export default function ContactsDirectory() {
                         onDragStart={(e) => handleDragStart(e, col)}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => handleDrop(e, col)}
+                        onDoubleClick={() => handleDoubleClickResize(col)} // FIX: Double Click Auto-Size!
                         className="flex items-center gap-2 w-full h-full cursor-grab active:cursor-grabbing hover:text-white px-2"
+                        title="Double-click to auto-size"
                       >
                         <GripHorizontal className="size-3 text-slate-600 shrink-0" />
                         <span className="truncate font-medium">{getColumnLabel(col)}</span>
@@ -446,8 +473,6 @@ export default function ContactsDirectory() {
               <tbody className="divide-y divide-slate-800/50">
                 {contacts.map((contact) => (
                   <tr key={contact.id} className={`transition-colors group ${selectedContacts.has(contact.id) ? 'bg-primary/5' : 'hover:bg-slate-800/40'}`}>
-
-                    {/* Select Row Checkbox */}
                     <td className="px-4 py-3 border-r border-slate-800/50 align-top">
                       <input
                         type="checkbox"
@@ -457,7 +482,6 @@ export default function ContactsDirectory() {
                       />
                     </td>
 
-                    {/* Data Cells (Now Wrap Properly!) */}
                     {visibleOrderedCols.map(col => (
                       <td key={col} className="px-4 py-3 border-r border-slate-800/50 align-top overflow-hidden max-w-0">
                         {renderCellContent(contact, col)}
@@ -477,7 +501,6 @@ export default function ContactsDirectory() {
         )}
       </div>
 
-      {/* Upgraded Edit Contact Modal */}
       <Dialog open={!!editingContact} onOpenChange={(open) => !open && setEditingContact(null)}>
         <DialogContent className="bg-slate-900 border-slate-700 text-white max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader><DialogTitle>Edit Contact Details</DialogTitle></DialogHeader>
@@ -488,7 +511,6 @@ export default function ContactsDirectory() {
             <div className="space-y-2"><Label>Email</Label><Input value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
             <div className="space-y-2"><Label>Company</Label><Input value={editForm.company} onChange={e => setEditForm({ ...editForm, company: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
 
-            {/* Dynamic Custom Fields Rendering in the Form! */}
             {customFields.length > 0 && <div className="border-t border-slate-800 my-4 pt-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Custom Fields</div>}
 
             {customFields.map(cf => (
