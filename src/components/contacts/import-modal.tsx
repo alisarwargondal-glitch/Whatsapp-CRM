@@ -253,9 +253,11 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
+        // FIX: Explicitly append user_id parameter to satisfy relational constraints
         const { data: newTag, error: tagErr } = await supabase
           .from('tags')
           .insert({
+            user_id: user.id,
             account_id: accountId,
             name: cleanFolderName,
             color: randomColor
@@ -320,7 +322,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
               });
             }
           } else {
-            // FIX: Manually compute and append the text sequence to fulfill Postgres constraints
             const contactPayload: Record<string, any> = {
               user_id: user.id,
               account_id: accountId,
@@ -526,7 +527,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             </div>
           )}
         </div>
-
 
         <DialogFooter className="bg-slate-900 border-t border-slate-800/60 pt-3">
           <Button
