@@ -1,22 +1,13 @@
-const CACHE_NAME = 'wa-crm-v1';
-const ASSETS = [
-    '/',
-    '/manifest.json',
-    '/favicon.ico'
-];
-
-self.addEventListener('install', (e) => {
-    e.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return cache.addAll(ASSETS);
-        })
-    );
+// Transparent pass-through service worker for live Next.js Web Apps
+self.addEventListener('install', () => {
+    self.skipWaiting();
 });
 
-self.addEventListener('fetch', (e) => {
-    e.respondWith(
-        fetch(e.request).catch(() => {
-            return caches.match(e.request);
-        })
-    );
+self.addEventListener('activate', (event) => {
+    event.waitUntil(self.clients.claim());
+});
+
+// Always fetch live from the network to keep Supabase & WhatsApp connections fully real-time
+self.addEventListener('fetch', (event) => {
+    event.respondWith(fetch(event.request));
 });
