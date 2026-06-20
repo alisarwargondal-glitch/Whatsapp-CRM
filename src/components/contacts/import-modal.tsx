@@ -252,6 +252,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
+        // User ID is safely passed to satisfy the Tags constraint
         const { data: newTag, error: tagErr } = await supabase
           .from('tags')
           .insert({
@@ -286,14 +287,13 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
       let failed = 0;
       let limitReachedOccurred = false;
 
-      // FIX: 100% Inline Native Deduplication (No external dependencies to crash)
       const uniqueRows: ParsedRow[] = [];
       const seenPhones = new Set<string>();
       let inFileDupes = 0;
 
       for (const row of parsedRows) {
         if (!row.phone || typeof row.phone !== 'string') continue;
-        const normalized = row.phone.replace(/\D/g, ''); // Digits only
+        const normalized = row.phone.replace(/\D/g, '');
         if (!normalized) continue;
 
         if (seenPhones.has(normalized)) {
@@ -322,7 +322,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
 
       for (const row of uniqueRows) {
         try {
-          const normalizedPhone = row.phone; // Already strictly numbers
+          const normalizedPhone = row.phone;
           let contactId = existingPhoneMap.get(normalizedPhone);
 
           if (contactId) {
@@ -340,11 +340,12 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
               });
             }
           } else {
+
+            // FIX: Removed phone_normalized from payload so database auto-generates it cleanly!
             const contactPayload: Record<string, any> = {
               user_id: user.id,
               account_id: accountId,
               phone: row.phone,
-              phone_normalized: normalizedPhone,
               name: row.name || null,
               email: row.email || null,
             };
@@ -366,7 +367,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                 continue;
               }
 
-              // FIX: If any other DB error happens, log it and show exactly why!
               console.error("Row Database Insert Error:", contactErr);
               toast.error(`Insert Error: ${contactErr.message}`, { id: 'db-error' });
               failed++;
