@@ -3,9 +3,10 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Trash2 } from 'lucide-react';
+import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -14,6 +15,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
+import { ImportModal } from '@/components/contacts/import-modal';
 
 interface FolderItem {
   id: string;
@@ -45,6 +47,9 @@ export default function ContactsDirectory() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Import Modal State
+  const [isImportOpen, setIsImportOpen] = useState(false);
 
   // Column State (Drag and Drop + Visibility)
   const [columnOrder, setColumnOrder] = useState<string[]>(['name', 'phone', 'email', 'company']);
@@ -96,7 +101,6 @@ export default function ContactsDirectory() {
     if (!activeFolder || !accountId) return;
     async function loadFolderContacts() {
       setLoading(true);
-      // Because we linked the table directly, we can just query contacts by folder_id!
       const { data: contactsData } = await supabase
         .from('contacts')
         .select('*')
@@ -131,7 +135,6 @@ export default function ContactsDirectory() {
   async function handleDeleteFolder(folderId: string) {
     if (!confirm("⚠️ WARNING: This will delete this folder AND completely erase all contacts inside it. Proceed?")) return;
 
-    // The ON DELETE CASCADE rule in Postgres handles deleting the contacts automatically
     const { error } = await supabase.from('folders').delete().eq('id', folderId);
     if (error) {
       toast.error("Failed to delete folder");
@@ -188,8 +191,8 @@ export default function ContactsDirectory() {
     const srcIdx = newOrder.indexOf(sourceColId);
     const tgtIdx = newOrder.indexOf(targetColId);
 
-    newOrder.splice(srcIdx, 1); // Remove from old position
-    newOrder.splice(tgtIdx, 0, sourceColId); // Insert at new position
+    newOrder.splice(srcIdx, 1);
+    newOrder.splice(tgtIdx, 0, sourceColId);
     setColumnOrder(newOrder);
   };
 
@@ -213,17 +216,27 @@ export default function ContactsDirectory() {
   if (!activeFolder) {
     return (
       <div className="p-6 max-w-7xl mx-auto space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Contact Folders</h1>
-          <p className="text-slate-400 text-sm">Select a directory to view your imported groups.</p>
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Contact Folders</h1>
+            <p className="text-slate-400 text-sm">Select a directory to view your imported groups.</p>
+          </div>
+          {/* THE MISSING IMPORT BUTTON IS BACK! */}
+          <Button onClick={() => setIsImportOpen(true)} className="bg-primary hover:bg-primary/90 text-white">
+            <Upload className="size-4 mr-2" /> Import CSV
+          </Button>
         </div>
 
         {loading ? (
           <div className="flex justify-center p-12"><Loader2 className="size-8 animate-spin text-primary" /></div>
         ) : folders.length === 0 ? (
-          <div className="text-center py-20 border border-dashed border-slate-700 rounded-xl bg-slate-900/50">
-            <Folder className="size-12 text-slate-600 mx-auto mb-3" />
+          <div className="text-center py-20 border border-dashed border-slate-700 rounded-xl bg-slate-900/50 flex flex-col items-center">
+            <Folder className="size-12 text-slate-600 mb-3" />
             <h3 className="text-white font-medium">No Folders Found</h3>
+            <p className="text-slate-400 text-sm mt-1 mb-4">Upload a CSV file to automatically generate your first folder.</p>
+            <Button onClick={() => setIsImportOpen(true)} className="bg-primary hover:bg-primary/90 text-white">
+              <Upload className="size-4 mr-2" /> Upload CSV
+            </Button>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -233,7 +246,6 @@ export default function ContactsDirectory() {
                 onClick={() => setActiveFolder(folder)}
                 className="relative group cursor-pointer bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-primary/50 hover:bg-slate-800/80 transition-all shadow-sm flex flex-col items-center text-center space-y-3"
               >
-                {/* Delete Folder 'X' Button */}
                 <button
                   onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id); }}
                   className="absolute top-2 right-2 p-1.5 rounded-md bg-red-500/10 text-red-400 opacity-0 group-hover:opacity-100 hover:bg-red-500 hover:text-white transition-all"
@@ -241,7 +253,6 @@ export default function ContactsDirectory() {
                 >
                   <X className="size-4" />
                 </button>
-
                 <div className="size-12 rounded-full flex items-center justify-center bg-opacity-20" style={{ backgroundColor: `${folder.color}20`, color: folder.color || '#3b82f6' }}>
                   <Folder className="size-6" />
                 </div>
@@ -250,6 +261,13 @@ export default function ContactsDirectory() {
             ))}
           </div>
         )}
+
+        {/* Modal Mount */}
+        <ImportModal
+          open={isImportOpen}
+          onOpenChange={setIsImportOpen}
+          onImported={() => window.location.reload()}
+        />
       </div>
     );
   }
@@ -258,7 +276,6 @@ export default function ContactsDirectory() {
 
   return (
     <div className="p-6 max-w-[100vw] mx-auto space-y-4 flex flex-col h-screen">
-      {/* Header Bar */}
       <div className="flex justify-between items-center bg-slate-900 p-4 rounded-xl border border-slate-800 shrink-0">
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="icon" onClick={() => setActiveFolder(null)} className="text-slate-400 hover:text-white">
@@ -300,7 +317,6 @@ export default function ContactsDirectory() {
         </div>
       </div>
 
-      {/* Draggable Data Table */}
       <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col relative">
         {loading ? (
           <div className="flex-1 flex justify-center items-center"><Loader2 className="size-8 animate-spin text-primary" /></div>
@@ -341,7 +357,6 @@ export default function ContactsDirectory() {
                     {visibleOrderedCols.map(col => (
                       <td key={col} className="px-4 py-3">{renderCellContent(contact, col)}</td>
                     ))}
-                    {/* Sticky Edit Button */}
                     <td className="px-4 py-3 text-right sticky right-0 bg-slate-900 group-hover:bg-slate-800/40 border-l border-slate-800/50">
                       <Button variant="ghost" size="icon" onClick={() => handleEditClick(contact)} className="size-8 text-slate-400 hover:text-primary hover:bg-primary/10">
                         <Edit className="size-4" />
@@ -355,18 +370,17 @@ export default function ContactsDirectory() {
         )}
       </div>
 
-      {/* Edit Contact Modal */}
       <Dialog open={!!editingContact} onOpenChange={(open) => !open && setEditingContact(null)}>
         <DialogContent className="bg-slate-900 border-slate-700 text-white">
           <DialogHeader><DialogTitle>Edit Contact Details</DialogTitle></DialogHeader>
           <div className="space-y-4 py-4">
-            <div className="space-y-2"><Label>Name</Label><Input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-slate-950 border-slate-700" /></div>
-            <div className="space-y-2"><Label>Phone</Label><Input value={editForm.phone} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} className="bg-slate-950 border-slate-700" /></div>
-            <div className="space-y-2"><Label>Email</Label><Input value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} className="bg-slate-950 border-slate-700" /></div>
-            <div className="space-y-2"><Label>Company</Label><Input value={editForm.company} onChange={e => setEditForm({ ...editForm, company: e.target.value })} className="bg-slate-950 border-slate-700" /></div>
+            <div className="space-y-2"><Label>Name</Label><Input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+            <div className="space-y-2"><Label>Phone</Label><Input value={editForm.phone} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+            <div className="space-y-2"><Label>Email</Label><Input value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
+            <div className="space-y-2"><Label>Company</Label><Input value={editForm.company} onChange={e => setEditForm({ ...editForm, company: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingContact(null)} className="border-slate-700 text-slate-300">Cancel</Button>
+            <Button variant="outline" onClick={() => setEditingContact(null)} className="border-slate-700 text-slate-300 hover:bg-slate-800">Cancel</Button>
             <Button onClick={saveContactEdit} className="bg-primary hover:bg-primary/90 text-white">Save Changes</Button>
           </DialogFooter>
         </DialogContent>
