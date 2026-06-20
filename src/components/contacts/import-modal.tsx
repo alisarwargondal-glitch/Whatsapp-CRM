@@ -132,7 +132,6 @@ function parseCSV(
     const values = records[i];
     if (values.length === 0 || values.length <= phoneIdx) continue;
 
-    // Aggressively clear string formatting artifacts and invisible breaks
     const phone = values[phoneIdx].trim().replace(/[\s\t\r\n]/g, '');
     if (!phone) continue;
 
@@ -309,13 +308,13 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             });
           }
         } else {
-          const contactPayload = {
+          // Safe contact payload object structure
+          const contactPayload: Record<string, any> = {
             user_id: user.id,
             account_id: accountId,
             phone: row.phone,
             name: row.name || null,
             email: row.email || null,
-            company: row.company || null,
           };
 
           const { data, error } = await supabase
@@ -352,7 +351,6 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
   }
 
   const preview = parsedRows.slice(0, 5);
-  const headers = parsedRows.length > 0 ? Object.keys(parsedRows[0]) : [];
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -423,14 +421,11 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                       <th className="px-3 py-2 text-left text-slate-400 font-medium w-[130px]">Phone</th>
                       <th className="px-3 py-2 text-left text-slate-400 font-medium w-[120px]">Name</th>
                       <th className="px-3 py-2 text-left text-slate-400 font-medium w-[140px]">Email</th>
-                      {dbCustomFields.map((cf) => {
-                        const normalizedCrmName = cf.field_name.toLowerCase().replace(/[^a-z0-9]/g, '');
-                        return (
-                          <th key={cf.id} className="px-3 py-2 text-left text-amber-400 font-medium uppercase w-[120px] truncate">
-                            {cf.field_name}
-                          </th>
-                        );
-                      })}
+                      {dbCustomFields.map((cf) => (
+                        <th key={cf.id} className="px-3 py-2 text-left text-amber-400 font-medium uppercase w-[120px] truncate">
+                          {cf.field_name}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
