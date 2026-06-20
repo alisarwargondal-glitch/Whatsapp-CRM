@@ -97,7 +97,7 @@ export default function ContactsDirectory() {
     if (savedSort) setSortConfig(JSON.parse(savedSort));
   }, []);
 
-  // Clear transient states when changing folders (but NEVER the sort configs or widths)
+  // Clear transient states when changing folders
   useEffect(() => {
     setSelectedContacts(new Set());
     setSearchQuery('');
@@ -173,7 +173,6 @@ export default function ContactsDirectory() {
         const customMap: Record<string, string> = {};
         cVals.forEach(cv => { customMap[cv.custom_field_id] = cv.value; });
 
-        // Safely extract Tags (protects against object/array structural issues)
         const myTags = contactTagsData
           ?.filter(ct => ct.contact_id === c.id)
           .map(ct => Array.isArray(ct.tags) ? ct.tags[0] : ct.tags)
@@ -197,20 +196,33 @@ export default function ContactsDirectory() {
 
     const newSort = { column: direction ? column : null, direction };
     setSortConfig(newSort);
-    localStorage.setItem('crm_sort_config', JSON.stringify(newSort)); // Save permanently
+    localStorage.setItem('crm_sort_config', JSON.stringify(newSort));
   };
 
   const processedContacts = contacts
     .filter(contact => {
+      // Deep Search Filter (Now checks Custom Fields!)
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
-        const matchesSearch =
+
+        // Check default fields first
+        let matchesSearch =
           contact.name?.toLowerCase().includes(q) ||
           contact.phone.includes(q) ||
           contact.email?.toLowerCase().includes(q) ||
           contact.company?.toLowerCase().includes(q);
+
+        // If not found in defaults, deeply scan all custom fields!
+        if (!matchesSearch && contact.custom_values) {
+          matchesSearch = Object.values(contact.custom_values).some(val =>
+            String(val).toLowerCase().includes(q)
+          );
+        }
+
         if (!matchesSearch) return false;
       }
+
+      // Tag Filter
       if (tagFilter.length > 0) {
         if (!contact.tags || contact.tags.length === 0) return false;
         const hasMatchingTag = contact.tags.some(t => t && tagFilter.includes(t.id));
@@ -240,9 +252,6 @@ export default function ContactsDirectory() {
       return 0;
     });
 
-  const toggleFilterTag = (tagId: string) => {
-    setTagFilter(prev => prev.includes(tagId) ? prev.filter(id => id !== tagId) : [...prev, tagId]);
-  };
 
   // --- ACTIONS ---
 
@@ -339,7 +348,7 @@ export default function ContactsDirectory() {
     setEditingContact(null);
   }
 
-  // --- EXCEL DRAG AND RESIZE ENGINE ---
+  // --- DRAG AND RESIZE ---
 
   const handleDragStart = (e: React.DragEvent, colId: string) => e.dataTransfer.setData('text/plain', colId);
 
@@ -369,7 +378,6 @@ export default function ContactsDirectory() {
     }
   };
 
-  // The "-1" signal tells the table to utilize native CSS max-content wrapping just like Excel!
   const handleDoubleClickResize = (colId: string) => {
     setColumnWidths(prev => {
       const next = { ...prev, [colId]: -1 };
@@ -490,7 +498,7 @@ export default function ContactsDirectory() {
           <div className="relative">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <Input
-              placeholder="Search..."
+              placeholder="Deep Search..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="w-64 pl-9 bg-slate-950 border-slate-700 text-sm text-white"
@@ -568,8 +576,6 @@ export default function ContactsDirectory() {
           </div>
         ) : (
           <div className="flex-1 overflow-x-auto overflow-y-auto scrollbar-thin w-full max-w-full">
-
-            {/* NO GHOST COLUMNS. Using w-max min-w-full to dynamically hug the contents safely */}
             <table className="text-left table-fixed border-collapse w-max min-w-full">
 
               <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10 shadow-sm">
@@ -584,7 +590,6 @@ export default function ContactsDirectory() {
                   </th>
 
                   {visibleOrderedCols.map(col => {
-                    // Logic to decipher max-content vs forced pixel width
                     const colWidth = columnWidths[col] === -1 ? 'max-content' : (columnWidths[col] ? `${columnWidths[col]}px` : '200px');
 
                     return (
@@ -663,7 +668,6 @@ export default function ContactsDirectory() {
         )}
       </div>
 
-      {/* Editing Modal Component */}
       <Dialog open={!!editingContact} onOpenChange={(open) => !open && setEditingContact(null)}>
         <DialogContent className="bg-slate-900 border-slate-700 text-white max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader><DialogTitle>Edit Contact Details</DialogTitle></DialogHeader>
