@@ -1,613 +1,316 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag } from '@/types';
+import { useAuth } from '@/hooks/use-auth';
+import { Folder, Users, ArrowLeft, Settings2, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from '@/components/ui/dropdown-menu';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import {
-  Search,
-  Plus,
-  Upload,
-  MoreHorizontal,
-  Pencil,
-  Trash2,
-  Loader2,
-  Users,
-  ChevronLeft,
-  ChevronRight,
-  SlidersHorizontal,
-  CheckSquare,
-  AlertCircle,
-} from 'lucide-react';
-import { ContactForm } from '@/components/contacts/contact-form';
-import { ContactDetailView } from '@/components/contacts/contact-detail-view';
-import { ImportModal } from '@/components/contacts/import-modal';
-import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager';
-import { useCan } from '@/hooks/use-can';
-import { GatedButton } from '@/components/ui/gated-button';
 
-const PAGE_SIZE = 25;
-
-interface ContactWithTags extends Contact {
-  tags?: Tag[];
+// Define our strict types based on your schema
+interface FolderTag {
+  id: string;
+  name: string;
+  color: string;
+  count?: number;
 }
 
-export default function ContactsPage() {
+interface Contact {
+  id: string;
+  phone: string;
+  name: string | null;
+  email: string | null;
+  company: string | null;
+  custom_values?: Record<string, string>;
+}
+
+interface CustomField {
+  id: string;
+  field_name: string;
+}
+
+export default function ContactsDirectory() {
   const supabase = createClient();
-  const canEdit = useCan('send-messages');
-  const canEditSettings = useCan('edit-settings');
+  const { accountId } = useAuth();
 
-  const [contacts, setContacts] = useState<ContactWithTags[]>([]);
+  // Navigation State
+  const [activeFolder, setActiveFolder] = useState<FolderTag | null>(null);
+
+  // Data State
+  const [folders, setFolders] = useState<FolderTag[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
 
-  // Bulk Operations State Trackers
-  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  const [bulkDeleting, setBulkDeleting] = useState(false);
+  // Column Visibility State
+  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
+    phone: true,
+    name: true,
+    email: true,
+    company: true,
+  });
+  const [showColumnMenu, setShowColumnMenu] = useState(false);
 
-  // Modals
-  const [formOpen, setFormOpen] = useState(false);
-  const [editContact, setEditContact] = useState<Contact | null>(null);
-  const [editContactTags, setEditContactTags] = useState<ContactTag[]>([]);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detailContactId, setDetailContactId] = useState<string | null>(null);
-  const [importOpen, setImportOpen] = useState(false);
-  const [customFieldsOpen, setCustomFieldsOpen] = useState(false);
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
-  const [deleting, setDeleting] = useState(false);
-
-  const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
-
-  const fetchTags = useCallback(async () => {
-    const { data } = await supabase.from('tags').select('*');
-    if (data) {
-      const map: Record<string, Tag> = {};
-      data.forEach((t) => (map[t.id] = t));
-      setTagsMap(map);
-    }
-  }, [supabase]);
-
-  const fetchContacts = useCallback(async () => {
-    setLoading(true);
-    setSelectedContactIds([]);
-
-    const from = page * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-
-    let query = supabase
-      .from('contacts')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(from, to);
-
-    if (search.trim()) {
-      const term = `%${search.trim()}%`;
-      query = query.or(`name.ilike.${term},phone.ilike.${term},email.ilike.${term}`);
-    }
-
-    const { data, count, error } = await query;
-
-    if (error) {
-      toast.error('Failed to load contacts');
-      setLoading(false);
-      return;
-    }
-
-    setTotalCount(count ?? 0);
-
-    if (!data || data.length === 0) {
-      setContacts([]);
-      setLoading(false);
-      return;
-    }
-
-    const contactIds = data.map((c) => c.id);
-    const { data: contactTags } = await supabase
-      .from('contact_tags')
-      .select('contact_id, tag_id')
-      .in('contact_id', contactIds);
-
-    const tagsByContact: Record<string, string[]> = {};
-    contactTags?.forEach((ct) => {
-      if (!tagsByContact[ct.contact_id]) tagsByContact[ct.contact_id] = [];
-      tagsByContact[ct.contact_id].push(ct.tag_id);
-    });
-
-    const enriched: ContactWithTags[] = data.map((c) => ({
-      ...c,
-      tags: (tagsByContact[c.id] ?? [])
-        .map((tid) => tagsMap[tid])
-        .filter(Boolean),
-    }));
-
-    setContacts(enriched);
-    setLoading(false);
-  }, [supabase, page, search, tagsMap]);
-
+  // 1. Fetch Folders (Tags) on initial load
   useEffect(() => {
-    fetchTags();
-  }, [fetchTags]);
+    if (!accountId) return;
 
-  useEffect(() => {
-    fetchContacts();
-  }, [fetchContacts]);
+    async function loadFolders() {
+      setLoading(true);
+      // Fetch tags and the count of contacts inside them
+      const { data: tagsData } = await supabase
+        .from('tags')
+        .select('id, name, color')
+        .eq('account_id', accountId)
+        .order('name');
 
-  // Bulk Checkbox Toggles
-  const handleSelectAllToggle = () => {
-    if (contacts.length > 0 && selectedContactIds.length === contacts.length) {
-      setSelectedContactIds([]);
-    } else {
-      setSelectedContactIds(contacts.map((c) => c.id));
+      if (tagsData) {
+        // Optional: You can do a separate count query here if you want to show contact counts on the folders
+        setFolders(tagsData);
+      }
+
+      // Load custom fields to populate the column toggles
+      const { data: fieldsData } = await supabase
+        .from('custom_fields')
+        .select('id, field_name')
+        .order('field_name');
+
+      if (fieldsData) {
+        setCustomFields(fieldsData);
+        // Add custom fields to our visibility state (default to true)
+        const newCols = { ...visibleColumns };
+        fieldsData.forEach(field => {
+          if (newCols[field.id] === undefined) newCols[field.id] = true;
+        });
+        setVisibleColumns(newCols);
+      }
+      setLoading(false);
     }
+
+    loadFolders();
+  }, [accountId, supabase]);
+
+  // 2. Fetch Contacts when a Folder is clicked
+  useEffect(() => {
+    if (!activeFolder || !accountId) return;
+
+    async function loadFolderContacts() {
+      setLoading(true);
+
+      // Fetch links
+      const { data: links } = await supabase
+        .from('contact_tags')
+        .select('contact_id')
+        .eq('tag_id', activeFolder.id);
+
+      if (!links || links.length === 0) {
+        setContacts([]);
+        setLoading(false);
+        return;
+      }
+
+      const contactIds = links.map(l => l.contact_id);
+
+      // Fetch actual contacts
+      const { data: contactsData } = await supabase
+        .from('contacts')
+        .select('*')
+        .in('id', contactIds);
+
+      // Fetch custom values for these contacts
+      const { data: customValuesData } = await supabase
+        .from('contact_custom_values')
+        .select('*')
+        .in('contact_id', contactIds);
+
+      // Map custom values into the contact objects
+      if (contactsData) {
+        const formattedContacts = contactsData.map(c => {
+          const cVals = customValuesData?.filter(cv => cv.contact_id === c.id) || [];
+          const customMap: Record<string, string> = {};
+          cVals.forEach(cv => {
+            customMap[cv.custom_field_id] = cv.value;
+          });
+          return { ...c, custom_values: customMap };
+        });
+        setContacts(formattedContacts);
+      }
+      setLoading(false);
+    }
+
+    loadFolderContacts();
+  }, [activeFolder, accountId, supabase]);
+
+  const toggleColumn = (key: string) => {
+    setVisibleColumns(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const handleSelectRowToggle = (contactId: string, event: React.ChangeEvent<HTMLInputElement>) => {
-    event.stopPropagation();
-    setSelectedContactIds((prev) =>
-      prev.includes(contactId) ? prev.filter((id) => id !== contactId) : [...prev, contactId]
-    );
-  };
-
-  async function handleBulkDelete() {
-    if (selectedContactIds.length === 0) return;
-    setBulkDeleting(true);
-
-    const { error } = await supabase
-      .from('contacts')
-      .delete()
-      .in('id', selectedContactIds);
-
-    if (error) {
-      toast.error('Failed to delete selected contacts');
-    } else {
-      toast.success(`Successfully deleted ${selectedContactIds.length} contacts`);
-      setSelectedContactIds([]);
-      fetchContacts();
-    }
-    setBulkDeleting(false);
-    setBulkDeleteOpen(false);
-  }
-
-  function openAddForm() {
-    setEditContact(null);
-    setEditContactTags([]);
-    setFormOpen(true);
-  }
-
-  async function openEditForm(contact: Contact) {
-    const { data } = await supabase
-      .from('contact_tags')
-      .select('*')
-      .eq('contact_id', contact.id);
-    setEditContact(contact);
-    setEditContactTags(data ?? []);
-    setFormOpen(true);
-  }
-
-  function openDetail(contactId: string) {
-    setDetailContactId(contactId);
-    setDetailOpen(true);
-  }
-
-  function confirmDelete(contact: Contact) {
-    setDeleteTarget(contact);
-    setDeleteConfirmOpen(true);
-  }
-
-  async function handleDelete() {
-    if (!deleteTarget) return;
-    setDeleting(true);
-
-    const { error } = await supabase
-      .from('contacts')
-      .delete()
-      .eq('id', deleteTarget.id);
-
-    if (error) {
-      toast.error('Failed to delete contact');
-    } else {
-      toast.success('Contact deleted');
-      fetchContacts();
-    }
-
-    setDeleting(false);
-    setDeleteConfirmOpen(false);
-    setDeleteTarget(null);
-  }
-
-  const totalPages = Math.ceil(totalCount / PAGE_SIZE);
-  const hasNext = page < totalPages - 1;
-  const hasPrev = page > 0;
-
-  return (
-    <div className="space-y-6">
-      {/* Header Panel */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Contacts</h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Manage your contact list. {totalCount > 0 && `${totalCount} total contacts.`}
-          </p>
+  // --- VIEW 1: FOLDER GRID ---
+  if (!activeFolder) {
+    return (
+      <div className="p-6 max-w-7xl mx-auto space-y-6">
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Contact Folders</h1>
+            <p className="text-slate-400 text-sm">Select a directory to view your imported groups.</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {canEditSettings && (
+
+        {loading ? (
+          <div className="flex justify-center p-12"><Loader2 className="size-8 animate-spin text-primary" /></div>
+        ) : folders.length === 0 ? (
+          <div className="text-center py-20 border border-dashed border-slate-700 rounded-xl bg-slate-900/50">
+            <Folder className="size-12 text-slate-600 mx-auto mb-3" />
+            <h3 className="text-white font-medium">No Folders Found</h3>
+            <p className="text-slate-400 text-sm mt-1">Upload a CSV to generate your first contact folder.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {folders.map(folder => (
+              <div
+                key={folder.id}
+                onClick={() => setActiveFolder(folder)}
+                className="group cursor-pointer bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-primary/50 hover:bg-slate-800/80 transition-all duration-200 shadow-sm hover:shadow-primary/10 flex flex-col items-center text-center space-y-3"
+              >
+                <div
+                  className="size-12 rounded-full flex items-center justify-center bg-opacity-20"
+                  style={{ backgroundColor: `${folder.color}20`, color: folder.color || '#3b82f6' }}
+                >
+                  <Folder className="size-6" />
+                </div>
+                <div>
+                  <h3 className="text-slate-200 font-semibold truncate px-2 max-w-[200px]" title={folder.name}>
+                    {folder.name}
+                  </h3>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // --- VIEW 2: INSIDE A FOLDER ---
+  return (
+    <div className="p-6 max-w-[100vw] mx-auto space-y-4 flex flex-col h-screen">
+      {/* Header Bar */}
+      <div className="flex justify-between items-center bg-slate-900 p-4 rounded-xl border border-slate-800 shrink-0">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={() => setActiveFolder(null)} className="text-slate-400 hover:text-white">
+            <ArrowLeft className="size-5" />
+          </Button>
+          <div className="flex items-center gap-3">
+            <Folder className="size-6" style={{ color: activeFolder.color || '#3b82f6' }} />
+            <div>
+              <h1 className="text-xl font-bold text-white leading-tight">{activeFolder.name}</h1>
+              <p className="text-slate-400 text-xs">{contacts.length} records inside</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 relative">
+          <div className="relative">
+            <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+            <Input placeholder="Search..." className="w-64 pl-9 bg-slate-950 border-slate-700 text-sm" />
+          </div>
+
+          {/* Column Visibility Filter */}
+          <div className="relative">
             <Button
               variant="outline"
-              onClick={() => setCustomFieldsOpen(true)}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800"
+              className="border-slate-700 bg-slate-950 text-slate-300"
+              onClick={() => setShowColumnMenu(!showColumnMenu)}
             >
-              <SlidersHorizontal className="size-4" />
-              Custom fields
+              <Settings2 className="size-4 mr-2" /> Columns
             </Button>
-          )}
-          <GatedButton
-            variant="outline"
-            canAct={canEdit}
-            gateReason="add or import contacts"
-            onClick={() => setImportOpen(true)}
-            className="border-slate-700 text-slate-300 hover:bg-slate-800"
-          >
-            <Upload className="size-4" />
-            Import
-          </GatedButton>
-          <GatedButton
-            canAct={canEdit}
-            gateReason="add or import contacts"
-            onClick={openAddForm}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground"
-          >
-            <Plus className="size-4" />
-            Add Contact
-          </GatedButton>
-        </div>
-      </div>
 
-      {/* Action Toolbar Context */}
-      {selectedContactIds.length > 0 ? (
-        <div className="flex items-center justify-between rounded-xl border border-blue-500/20 bg-blue-500/10 px-4 py-3 animate-in fade-in duration-150">
-          <div className="flex items-center gap-2 text-sm text-blue-400 font-medium">
-            <CheckSquare className="size-4" />
-            <span>Selected {selectedContactIds.length} contact{selectedContactIds.length !== 1 ? 's' : ''}</span>
-          </div>
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={() => setBulkDeleteOpen(true)}
-            className="bg-red-600 hover:bg-red-700 text-white flex items-center gap-1.5 shadow-md"
-          >
-            <Trash2 className="size-3.5" />
-            Delete Selected
-          </Button>
-        </div>
-      ) : (
-        <div className="relative max-w-sm">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-slate-500" />
-          <Input
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(0);
-            }}
-            placeholder="Search by name, phone, or email..."
-            className="pl-8 bg-slate-900 border-slate-700 text-white placeholder:text-slate-500"
-          />
-        </div>
-      )}
-
-      {/* Main Table Layout */}
-      <div className="rounded-lg border border-slate-800 overflow-hidden bg-slate-950/20 shadow-xl">
-        <Table>
-          <TableHeader>
-            <TableRow className="border-slate-800 hover:bg-transparent bg-slate-900/40">
-              <TableHead className="w-12 text-center px-4">
-                <input
-                  type="checkbox"
-                  checked={contacts.length > 0 && selectedContactIds.length === contacts.length}
-                  onChange={handleSelectAllToggle}
-                  className="rounded border-slate-700 bg-slate-900 text-primary focus:ring-primary size-4 accent-primary cursor-pointer"
-                  style={{ display: 'inline-block', verticalAlign: 'middle' }}
-                />
-              </TableHead>
-              <TableHead className="text-slate-400">Name</TableHead>
-              <TableHead className="text-slate-400">Phone</TableHead>
-              <TableHead className="text-slate-400 hidden md:table-cell">Email</TableHead>
-              <TableHead className="text-slate-400 hidden lg:table-cell">Company</TableHead>
-              <TableHead className="text-slate-400 hidden md:table-cell">Tags</TableHead>
-              <TableHead className="text-slate-400 hidden lg:table-cell">Created</TableHead>
-              <TableHead className="text-slate-400 w-12" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow className="border-slate-800">
-                <TableCell colSpan={8} className="text-center py-12">
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 className="size-6 animate-spin text-primary" />
-                    <p className="text-sm text-slate-500">Loading contacts...</p>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ) : contacts.length === 0 ? (
-              <TableRow className="border-slate-800">
-                <TableCell colSpan={8} className="text-center py-12">
-                  <div className="flex flex-col items-center gap-2">
-                    <Users className="size-8 text-slate-600" />
-                    <p className="text-sm text-slate-500">
-                      {search ? 'No contacts match your search.' : 'No contacts yet.'}
-                    </p>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ) : (
-              contacts.map((contact) => {
-                const isSelected = selectedContactIds.includes(contact.id);
-                return (
-                  <TableRow
-                    key={contact.id}
-                    className={`border-slate-800 hover:bg-slate-900/40 cursor-pointer transition-colors ${isSelected ? 'bg-blue-500/5 hover:bg-blue-500/10' : ''
-                      }`}
-                    onClick={() => openDetail(contact.id)}
-                  >
-                    <TableCell
-                      className="text-center px-4"
-                      onClick={(e) => e.stopPropagation()}
-                    >
+            {showColumnMenu && (
+              <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 p-2 overflow-hidden">
+                <div className="text-xs font-semibold text-slate-400 uppercase px-2 mb-2">Display Fields</div>
+                <div className="max-h-[300px] overflow-y-auto space-y-1 scrollbar-thin">
+                  {['name', 'phone', 'email', 'company'].map(key => (
+                    <label key={key} className="flex items-center gap-2 p-2 hover:bg-slate-800 rounded cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={isSelected}
-                        onChange={(e) => handleSelectRowToggle(contact.id, e)}
-                        className="rounded border-slate-700 bg-slate-900 text-primary focus:ring-primary size-4 accent-primary cursor-pointer"
-                        style={{ display: 'inline-block', verticalAlign: 'middle' }}
+                        checked={visibleColumns[key]}
+                        onChange={() => toggleColumn(key)}
+                        className="rounded border-slate-600 bg-slate-900 text-primary focus:ring-primary"
                       />
-                    </TableCell>
-                    <TableCell className="text-white font-medium">
-                      {contact.name || <span className="text-slate-500 italic">Unnamed</span>}
-                    </TableCell>
-                    <TableCell className="text-slate-300 font-mono text-xs">
-                      {contact.phone}
-                    </TableCell>
-                    <TableCell className="text-slate-400 hidden md:table-cell text-sm">
-                      {contact.email || <span className="text-slate-600">-</span>}
-                    </TableCell>
-                    <TableCell className="text-slate-400 hidden lg:table-cell text-sm">
-                      {contact.company || <span className="text-slate-600">-</span>}
-                    </TableCell>
-                    <TableCell className="hidden md:table-cell">
-                      <div className="flex flex-wrap gap-1">
-                        {contact.tags && contact.tags.length > 0 ? (
-                          contact.tags.slice(0, 3).map((tag) => (
-                            <span
-                              key={tag.id}
-                              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-                              style={{
-                                backgroundColor: tag.color + '20',
-                                color: tag.color,
-                              }}
-                            >
-                              {tag.name}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-slate-600 text-xs">-</span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-slate-500 text-xs hidden lg:table-cell">
-                      {new Date(contact.created_at).toLocaleDateString('en-US', {
-                        month: 'short',
-                        day: 'numeric',
-                        year: 'numeric',
-                      })}
-                    </TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger
-                          render={
-                            <Button
-                              variant="ghost"
-                              size="icon-sm"
-                              className="text-slate-400 hover:text-white"
-                            />
-                          }
-                        >
-                          <MoreHorizontal className="size-4" />
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          align="end"
-                          className="bg-slate-900 border-slate-700"
-                        >
-                          <DropdownMenuItem
-                            onClick={() => openEditForm(contact)}
-                            className="text-slate-300 focus:bg-slate-800 focus:text-white"
-                          >
-                            <Pencil className="size-4" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator className="bg-slate-700" />
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onClick={() => confirmDelete(contact)}
-                          >
-                            <Trash2 className="size-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
+                      <span className="text-sm text-slate-300 capitalize">{key}</span>
+                    </label>
+                  ))}
+                  {customFields.map(cf => (
+                    <label key={cf.id} className="flex items-center gap-2 p-2 hover:bg-slate-800 rounded cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns[cf.id]}
+                        onChange={() => toggleColumn(cf.id)}
+                        className="rounded border-slate-600 bg-slate-900 text-primary focus:ring-primary"
+                      />
+                      <span className="text-sm text-slate-300 capitalize truncate">{cf.field_name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
             )}
-          </TableBody>
-        </Table>
-      </div>
-
-      {/* Pagination View */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-slate-500">
-            Showing {page * PAGE_SIZE + 1}-{Math.min((page + 1) * PAGE_SIZE, totalCount)} of{' '}
-            {totalCount}
-          </p>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="outline"
-              size="icon-sm"
-              disabled={!hasPrev}
-              onClick={() => setPage((p) => p - 1)}
-              className="border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-            >
-              <ChevronLeft className="size-4" />
-            </Button>
-            <span className="text-xs text-slate-400 px-2">
-              Page {page + 1} of {totalPages}
-            </span>
-            <Button
-              variant="outline"
-              size="icon-sm"
-              disabled={!hasNext}
-              onClick={() => setPage((p) => p + 1)}
-              className="border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-            >
-              <ChevronRight className="size-4" />
-            </Button>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* Dialog Modals Configuration Set */}
-      <ContactForm
-        open={formOpen}
-        onOpenChange={setFormOpen}
-        contact={editContact}
-        contactTags={editContactTags}
-        onSaved={() => {
-          fetchContacts();
-          fetchTags();
-        }}
-        onViewExisting={(id) => {
-          setFormOpen(false);
-          openDetail(id);
-        }}
-      />
+      {/* Resizable Data Table */}
+      <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col relative">
+        {loading ? (
+          <div className="flex-1 flex justify-center items-center"><Loader2 className="size-8 animate-spin text-primary" /></div>
+        ) : contacts.length === 0 ? (
+          <div className="flex-1 flex flex-col justify-center items-center text-slate-500">
+            <Users className="size-10 mb-2 opacity-50" />
+            <p>This folder is currently empty.</p>
+          </div>
+        ) : (
+          <div className="flex-1 overflow-auto scrollbar-thin w-full">
+            <table className="w-full text-sm text-left whitespace-nowrap min-w-max border-collapse">
+              <thead className="sticky top-0 bg-slate-950/90 backdrop-blur border-b border-slate-800 text-slate-400 z-10">
+                <tr>
+                  {visibleColumns['name'] && (
+                    <th className="px-4 py-3 font-medium truncate" style={{ resize: 'horizontal', overflow: 'hidden', minWidth: '150px' }}>Name</th>
+                  )}
+                  {visibleColumns['phone'] && (
+                    <th className="px-4 py-3 font-medium truncate" style={{ resize: 'horizontal', overflow: 'hidden', minWidth: '150px' }}>Phone</th>
+                  )}
+                  {visibleColumns['email'] && (
+                    <th className="px-4 py-3 font-medium truncate" style={{ resize: 'horizontal', overflow: 'hidden', minWidth: '200px' }}>Email</th>
+                  )}
+                  {visibleColumns['company'] && (
+                    <th className="px-4 py-3 font-medium truncate" style={{ resize: 'horizontal', overflow: 'hidden', minWidth: '150px' }}>Company</th>
+                  )}
+                  {customFields.filter(cf => visibleColumns[cf.id]).map(cf => (
+                    <th key={cf.id} className="px-4 py-3 font-medium text-amber-500/80 truncate" style={{ resize: 'horizontal', overflow: 'hidden', minWidth: '150px' }}>
+                      {cf.field_name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {contacts.map((contact) => (
+                  <tr key={contact.id} className="hover:bg-slate-800/50 transition-colors">
+                    {visibleColumns['name'] && <td className="px-4 py-3 text-white">{contact.name || '-'}</td>}
+                    {visibleColumns['phone'] && <td className="px-4 py-3 text-slate-300 font-mono">{contact.phone}</td>}
+                    {visibleColumns['email'] && <td className="px-4 py-3 text-slate-400">{contact.email || '-'}</td>}
+                    {visibleColumns['company'] && <td className="px-4 py-3 text-slate-400">{contact.company || '-'}</td>}
 
-      <ContactDetailView
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        contactId={detailContactId}
-        onUpdated={fetchContacts}
-      />
-
-      <ImportModal
-        open={importOpen}
-        onOpenChange={setImportOpen}
-        onImported={fetchContacts}
-      />
-
-      {canEditSettings && (
-        <CustomFieldsManager
-          open={customFieldsOpen}
-          onOpenChange={setCustomFieldsOpen}
-        />
-      )}
-
-      {/* Bulk Delete Dialog */}
-      <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <AlertCircle className="size-5 text-red-500" /> Bulk Delete Contacts
-            </DialogTitle>
-            <DialogDescription className="text-slate-400">
-              Are you sure you want to completely erase the{' '}
-              <span className="text-red-400 font-bold font-mono">
-                {selectedContactIds.length}
-              </span>{' '}
-              selected contact profiles? This cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="bg-slate-900 border-slate-700 pt-2">
-            <Button
-              variant="outline"
-              onClick={() => setBulkDeleteOpen(false)}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800"
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleBulkDelete}
-              disabled={bulkDeleting}
-              className="bg-red-600 hover:bg-red-700 text-white"
-            >
-              {bulkDeleting && <Loader2 className="size-4 animate-spin" />}
-              Confirm Bulk Delete
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Single Delete Confirmation */}
-      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-white">Delete Contact</DialogTitle>
-            <DialogDescription className="text-slate-400">
-              Are you sure you want to delete{' '}
-              <span className="text-slate-200 font-medium">
-                {deleteTarget?.name || deleteTarget?.phone}
-              </span>
-              ? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="bg-slate-900 border-slate-700">
-            <Button
-              variant="outline"
-              onClick={() => setDeleteConfirmOpen(false)}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800"
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={deleting}
-            >
-              {deleting && <Loader2 className="size-4 animate-spin" />}
-              Delete
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+                    {customFields.filter(cf => visibleColumns[cf.id]).map(cf => (
+                      <td key={cf.id} className="px-4 py-3 text-slate-400 truncate max-w-[200px]">
+                        {contact.custom_values?.[cf.id] || '-'}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
