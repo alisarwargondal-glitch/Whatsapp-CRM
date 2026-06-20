@@ -1,19 +1,17 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, Edit, X, Upload, Trash2, Tag as TagIcon, ArrowUpDown } from 'lucide-react';
+import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, X, Upload, Trash2, Tag as TagIcon, ArrowUpDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from '@/components/ui/dialog';
 import { ImportModal } from '@/components/contacts/import-modal';
 
@@ -44,18 +42,49 @@ interface CustomField {
   field_name: string;
 }
 
-// Sorting Types
 type SortDirection = 'asc' | 'desc' | null;
 interface SortState {
   column: string | null;
   direction: SortDirection;
 }
 
+// --- INLINE EDITING COMPONENTS ---
+function EditableInput({ initialValue, onSave }: { initialValue: string, onSave: (val: string) => void }) {
+  const [val, setVal] = useState(initialValue);
+  useEffect(() => setVal(initialValue), [initialValue]);
+
+  return (
+    <input
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => { if (val !== initialValue) onSave(val); }}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      className="w-full bg-transparent text-sm text-slate-300 outline-none focus:ring-1 focus:ring-primary focus:bg-slate-900 rounded px-1.5 py-1 transition-all border border-transparent hover:border-slate-700/50"
+    />
+  );
+}
+
+function EditableTextarea({ initialValue, onSave }: { initialValue: string, onSave: (val: string) => void }) {
+  const [val, setVal] = useState(initialValue);
+  useEffect(() => setVal(initialValue), [initialValue]);
+
+  return (
+    <textarea
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => { if (val !== initialValue) onSave(val); }}
+      rows={1}
+      className="w-full bg-transparent text-sm text-slate-300 outline-none focus:ring-1 focus:ring-primary focus:bg-slate-900 rounded px-1.5 py-1 transition-all border border-transparent hover:border-slate-700/50 resize-y min-h-[32px] scrollbar-thin"
+    />
+  );
+}
+
+
 export default function ContactsDirectory() {
   const supabase = createClient();
   const { accountId } = useAuth();
 
-  // Navigation & Data State
+  // Data State
   const [activeFolder, setActiveFolder] = useState<FolderItem | null>(null);
   const [folders, setFolders] = useState<FolderItem[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -63,48 +92,52 @@ export default function ContactsDirectory() {
   const [allTags, setAllTags] = useState<TagItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Search, Filter & Sort State
+  // Filter & Sort State
   const [searchQuery, setSearchQuery] = useState('');
   const [tagFilter, setTagFilter] = useState<string[]>([]);
-  const [showTagFilterMenu, setShowTagFilterMenu] = useState(false);
   const [sortConfig, setSortConfig] = useState<SortState>({ column: null, direction: null });
 
-  // Bulk Selection State
+  // UI State
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
-
-  // Import Modal State
   const [isImportOpen, setIsImportOpen] = useState(false);
+  const [editingTagsFor, setEditingTagsFor] = useState<Contact | null>(null);
 
-  // Column Tracking & Memory State
+  // Column State
   const [columnOrder, setColumnOrder] = useState<string[]>(['name', 'phone', 'tags', 'email', 'company']);
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
     name: true, phone: true, tags: true, email: true, company: true,
   });
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
+
+  // Menu Refs for Click-Outside
   const [showColumnMenu, setShowColumnMenu] = useState(false);
+  const [showTagFilterMenu, setShowTagFilterMenu] = useState(false);
+  const colMenuRef = useRef<HTMLDivElement>(null);
+  const tagMenuRef = useRef<HTMLDivElement>(null);
 
-  // Edit State
-  const [editingContact, setEditingContact] = useState<Contact | null>(null);
-  const [editForm, setEditForm] = useState({
-    name: '', phone: '', email: '', company: '',
-    custom_values: {} as Record<string, string>,
-    tags: [] as string[]
-  });
+  // 1. Click-Outside Global Listener
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (colMenuRef.current && !colMenuRef.current.contains(e.target as Node)) setShowColumnMenu(false);
+      if (tagMenuRef.current && !tagMenuRef.current.contains(e.target as Node)) setShowTagFilterMenu(false);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
-  // Load Saved Sort Settings Once On Mount
+  // 2. Load Configs
   useEffect(() => {
     const savedSort = localStorage.getItem('crm_sort_config');
     if (savedSort) setSortConfig(JSON.parse(savedSort));
   }, []);
 
-  // Clear transient states when changing folders
   useEffect(() => {
     setSelectedContacts(new Set());
     setSearchQuery('');
     setTagFilter([]);
   }, [activeFolder]);
 
-  // 1. Fetch Initial Schema & Restore Memory Configs
+  // 3. Fetch Initial Data
   useEffect(() => {
     if (!accountId) return;
     async function loadInitialData() {
@@ -128,7 +161,6 @@ export default function ContactsDirectory() {
           newOrder.push(field.id);
         });
 
-        // Restore Layout configs from Local Storage
         const savedOrder = localStorage.getItem('crm_col_order');
         const savedVis = localStorage.getItem('crm_col_vis');
         const savedWidths = localStorage.getItem('crm_col_widths');
@@ -150,7 +182,7 @@ export default function ContactsDirectory() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, supabase]);
 
-  // 2. Fetch Contacts
+  // 4. Fetch Contacts
   useEffect(() => {
     if (!activeFolder || !accountId) return;
     async function loadFolderContacts() {
@@ -164,7 +196,6 @@ export default function ContactsDirectory() {
       }
 
       const contactIds = contactsData.map(c => c.id);
-
       const { data: customValuesData } = await supabase.from('contact_custom_values').select('*').in('contact_id', contactIds);
       const { data: contactTagsData } = await supabase.from('contact_tags').select('contact_id, tag_id, tags(id, name, color)').in('contact_id', contactIds);
 
@@ -188,7 +219,6 @@ export default function ContactsDirectory() {
   }, [activeFolder, accountId, supabase]);
 
   // --- FILTERING & SORTING ENGINE ---
-
   const handleSort = (column: string) => {
     let direction: SortDirection = 'asc';
     if (sortConfig.column === column && sortConfig.direction === 'asc') direction = 'desc';
@@ -201,40 +231,27 @@ export default function ContactsDirectory() {
 
   const processedContacts = contacts
     .filter(contact => {
-      // Deep Search Filter (Now checks Custom Fields!)
+      // Search
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
-
-        // Check default fields first
-        let matchesSearch =
-          contact.name?.toLowerCase().includes(q) ||
-          contact.phone.includes(q) ||
-          contact.email?.toLowerCase().includes(q) ||
-          contact.company?.toLowerCase().includes(q);
-
-        // If not found in defaults, deeply scan all custom fields!
+        let matchesSearch = contact.name?.toLowerCase().includes(q) || contact.phone.includes(q) || contact.email?.toLowerCase().includes(q) || contact.company?.toLowerCase().includes(q);
         if (!matchesSearch && contact.custom_values) {
-          matchesSearch = Object.values(contact.custom_values).some(val =>
-            String(val).toLowerCase().includes(q)
-          );
+          matchesSearch = Object.values(contact.custom_values).some(val => String(val).toLowerCase().includes(q));
         }
-
         if (!matchesSearch) return false;
       }
 
-      // Tag Filter
+      // Tag Filter (Fixed robust matching)
       if (tagFilter.length > 0) {
-        if (!contact.tags || contact.tags.length === 0) return false;
-        const hasMatchingTag = contact.tags.some(t => t && tagFilter.includes(t.id));
+        const contactTagIds = contact.tags?.map(t => t.id) || [];
+        const hasMatchingTag = tagFilter.some(id => contactTagIds.includes(id));
         if (!hasMatchingTag) return false;
       }
       return true;
     })
     .sort((a, b) => {
       if (!sortConfig.column || !sortConfig.direction) return 0;
-
-      let valA: string = '';
-      let valB: string = '';
+      let valA: string = ''; let valB: string = '';
 
       if (['name', 'phone', 'email', 'company'].includes(sortConfig.column)) {
         valA = String((a as any)[sortConfig.column] || '').toLowerCase();
@@ -252,8 +269,49 @@ export default function ContactsDirectory() {
       return 0;
     });
 
+  const toggleFilterTag = (tagId: string) => {
+    setTagFilter(prev => prev.includes(tagId) ? prev.filter(id => id !== tagId) : [...prev, tagId]);
+  };
 
-  // --- ACTIONS ---
+  // --- ACTIONS & AUTO-SAVES ---
+  async function handleInlineSave(contactId: string, colId: string, newValue: string, isDefault: boolean) {
+    // Optimistic UI Update
+    setContacts(prev => prev.map(c => {
+      if (c.id !== contactId) return c;
+      if (isDefault) return { ...c, [colId]: newValue };
+      return { ...c, custom_values: { ...c.custom_values, [colId]: newValue } };
+    }));
+
+    // Database Update
+    if (isDefault) {
+      const { error } = await supabase.from('contacts').update({ [colId]: newValue }).eq('id', contactId);
+      if (error) toast.error(`Failed to save ${colId}`);
+    } else {
+      const { error } = await supabase.from('contact_custom_values').upsert({
+        contact_id: contactId, custom_field_id: colId, value: newValue
+      }, { onConflict: 'contact_id, custom_field_id' });
+      if (error) toast.error("Failed to save custom field");
+    }
+  }
+
+  async function toggleInlineTag(contactId: string, tag: TagItem) {
+    const contact = contacts.find(c => c.id === contactId);
+    if (!contact) return;
+
+    const hasTag = contact.tags?.some(t => t.id === tag.id);
+    let newTags = contact.tags || [];
+
+    if (hasTag) {
+      newTags = newTags.filter(t => t.id !== tag.id);
+      await supabase.from('contact_tags').delete().eq('contact_id', contactId).eq('tag_id', tag.id);
+    } else {
+      newTags = [...newTags, tag];
+      await supabase.from('contact_tags').insert({ contact_id: contactId, tag_id: tag.id });
+    }
+
+    setContacts(prev => prev.map(c => c.id === contactId ? { ...c, tags: newTags } : c));
+    setEditingTagsFor(prev => prev ? { ...prev, tags: newTags } : null);
+  }
 
   async function handleDeleteFolder(folderId: string) {
     if (!confirm("⚠️ WARNING: This will delete this folder AND completely erase all contacts inside it. Proceed?")) return;
@@ -295,61 +353,7 @@ export default function ContactsDirectory() {
     });
   };
 
-  // --- EDITING ---
-
-  function handleEditClick(contact: Contact) {
-    setEditForm({
-      name: contact.name || '',
-      phone: contact.phone || '',
-      email: contact.email || '',
-      company: contact.company || '',
-      custom_values: { ...(contact.custom_values || {}) },
-      tags: contact.tags?.map(t => t.id) || []
-    });
-    setEditingContact(contact);
-  }
-
-  async function saveContactEdit() {
-    if (!editingContact) return;
-
-    const { error: baseError } = await supabase
-      .from('contacts')
-      .update({ name: editForm.name, phone: editForm.phone, email: editForm.email, company: editForm.company })
-      .eq('id', editingContact.id);
-
-    if (baseError) return toast.error("Failed to update contact base info.");
-
-    const customValuesArray = Object.entries(editForm.custom_values).map(([id, val]) => ({
-      contact_id: editingContact.id,
-      custom_field_id: id,
-      value: val
-    }));
-
-    if (customValuesArray.length > 0) {
-      await supabase.from('contact_custom_values').upsert(customValuesArray, { onConflict: 'contact_id, custom_field_id' });
-    }
-
-    const currentTagIds = editingContact.tags?.map(t => t.id) || [];
-    const newTagIds = editForm.tags;
-
-    const tagsToAdd = newTagIds.filter(id => !currentTagIds.includes(id));
-    const tagsToRemove = currentTagIds.filter(id => !newTagIds.includes(id));
-
-    if (tagsToAdd.length > 0) {
-      await supabase.from('contact_tags').insert(tagsToAdd.map(tagId => ({ contact_id: editingContact.id, tag_id: tagId })));
-    }
-    if (tagsToRemove.length > 0) {
-      await supabase.from('contact_tags').delete().eq('contact_id', editingContact.id).in('tag_id', tagsToRemove);
-    }
-
-    toast.success("Contact updated!");
-    const updatedTags = allTags.filter(t => newTagIds.includes(t.id));
-    setContacts(prev => prev.map(c => c.id === editingContact.id ? { ...c, ...editForm, tags: updatedTags } : c));
-    setEditingContact(null);
-  }
-
   // --- DRAG AND RESIZE ---
-
   const handleDragStart = (e: React.DragEvent, colId: string) => e.dataTransfer.setData('text/plain', colId);
 
   const handleDrop = (e: React.DragEvent, targetColId: string) => {
@@ -391,16 +395,14 @@ export default function ContactsDirectory() {
     return customFields.find(cf => cf.id === colId)?.field_name || colId;
   }
 
-  function renderCellContent(contact: Contact, col: string) {
-    const baseClasses = "block whitespace-normal break-words leading-relaxed py-1 text-sm";
-    switch (col) {
-      case 'name': return <span className={`text-white font-medium ${baseClasses}`}>{contact.name || '-'}</span>;
-      case 'phone': return <span className={`text-slate-300 font-mono ${baseClasses}`}>{contact.phone}</span>;
-      case 'email': return <span className={`text-slate-400 ${baseClasses}`}>{contact.email || '-'}</span>;
-      case 'company': return <span className={`text-slate-400 ${baseClasses}`}>{contact.company || '-'}</span>;
-      case 'tags': return (
-        <div className={`flex flex-wrap gap-1 ${baseClasses}`}>
-          {(!contact.tags || contact.tags.length === 0) ? <span className="text-slate-600">-</span> :
+  function renderInlineCell(contact: Contact, col: string) {
+    if (col === 'tags') {
+      return (
+        <div
+          onClick={() => setEditingTagsFor(contact)}
+          className="flex flex-wrap gap-1 py-1 cursor-pointer hover:bg-slate-800/50 rounded px-1.5 min-h-[32px] items-center border border-transparent hover:border-slate-700/50 transition-all"
+        >
+          {(!contact.tags || contact.tags.length === 0) ? <span className="text-slate-600 italic text-xs px-1">+ Add tags</span> :
             contact.tags.map(t => (
               <span key={t.id} className="px-1.5 py-0.5 rounded text-[11px] font-medium border border-transparent whitespace-nowrap" style={{ backgroundColor: `${t.color}20`, color: t.color, borderColor: `${t.color}40` }}>
                 {t.name}
@@ -409,9 +411,18 @@ export default function ContactsDirectory() {
           }
         </div>
       );
-      default: return <span className={`text-slate-400 ${baseClasses}`}>{contact.custom_values?.[col] || '-'}</span>;
+    }
+
+    const isDefault = ['name', 'phone', 'email', 'company'].includes(col);
+    const initialValue = isDefault ? (contact[col as keyof Contact] as string || '') : (contact.custom_values?.[col] || '');
+
+    if (isDefault) {
+      return <EditableInput initialValue={initialValue} onSave={(val) => handleInlineSave(contact.id, col, val, true)} />;
+    } else {
+      return <EditableTextarea initialValue={initialValue} onSave={(val) => handleInlineSave(contact.id, col, val, false)} />;
     }
   }
+
 
   // --- RENDERS ---
 
@@ -501,15 +512,15 @@ export default function ContactsDirectory() {
               placeholder="Deep Search..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="w-64 pl-9 bg-slate-950 border-slate-700 text-sm text-white"
+              className="w-64 pl-9 bg-slate-950 border-slate-700 text-sm text-white focus:border-primary"
             />
             {searchQuery && (
               <X className="size-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 cursor-pointer hover:text-white" onClick={() => setSearchQuery('')} />
             )}
           </div>
 
-          <div className="relative">
-            <Button variant="outline" className={`border-slate-700 bg-slate-950 text-slate-300 ${tagFilter.length > 0 ? 'border-primary/50 text-primary' : ''}`} onClick={() => { setShowTagFilterMenu(!showTagFilterMenu); setShowColumnMenu(false); }}>
+          <div className="relative" ref={tagMenuRef}>
+            <Button variant="outline" className={`border-slate-700 bg-slate-950 text-slate-300 ${tagFilter.length > 0 ? 'border-primary/50 text-primary' : ''}`} onClick={() => setShowTagFilterMenu(!showTagFilterMenu)}>
               <TagIcon className="size-4 mr-2" /> Filter Tags
               {tagFilter.length > 0 && <span className="ml-2 bg-primary text-white text-xs rounded-full px-1.5 py-0.5">{tagFilter.length}</span>}
             </Button>
@@ -537,8 +548,8 @@ export default function ContactsDirectory() {
             )}
           </div>
 
-          <div className="relative">
-            <Button variant="outline" className="border-slate-700 bg-slate-950 text-slate-300" onClick={() => { setShowColumnMenu(!showColumnMenu); setShowTagFilterMenu(false); }}>
+          <div className="relative" ref={colMenuRef}>
+            <Button variant="outline" className="border-slate-700 bg-slate-950 text-slate-300" onClick={() => setShowColumnMenu(!showColumnMenu)}>
               <Settings2 className="size-4 mr-2" /> Columns
             </Button>
             {showColumnMenu && (
@@ -577,7 +588,6 @@ export default function ContactsDirectory() {
         ) : (
           <div className="flex-1 overflow-x-auto overflow-y-auto scrollbar-thin w-full max-w-full">
             <table className="text-left table-fixed border-collapse w-max min-w-full">
-
               <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10 shadow-sm">
                 <tr>
                   <th className="px-4 py-3 border-r border-slate-800/50 w-[50px] shrink-0 align-top">
@@ -631,8 +641,6 @@ export default function ContactsDirectory() {
                       </th>
                     )
                   })}
-
-                  <th className="px-4 py-3 font-medium text-right sticky right-0 bg-slate-950/95 w-[80px]">Actions</th>
                 </tr>
               </thead>
 
@@ -644,86 +652,55 @@ export default function ContactsDirectory() {
                         type="checkbox"
                         checked={selectedContacts.has(contact.id)}
                         onChange={() => toggleSelectRow(contact.id)}
-                        className="rounded border-slate-600 bg-slate-900 text-primary cursor-pointer mt-1"
+                        className="rounded border-slate-600 bg-slate-900 text-primary cursor-pointer mt-1.5"
                       />
                     </td>
 
+                    {/* Inline Editable Cells Render Engine */}
                     {visibleOrderedCols.map(col => (
-                      <td key={col} className="px-4 py-3 border-r border-slate-800/50 align-top overflow-hidden max-w-0">
-                        {renderCellContent(contact, col)}
+                      <td key={col} className="px-2 py-2 border-r border-slate-800/50 align-top overflow-hidden max-w-0">
+                        {renderInlineCell(contact, col)}
                       </td>
                     ))}
-
-                    <td className="px-4 py-3 text-right sticky right-0 bg-slate-900 group-hover:bg-slate-800/40 border-l border-slate-800/50 align-top">
-                      <Button variant="ghost" size="icon" onClick={() => handleEditClick(contact)} className="size-8 text-slate-400 hover:text-primary hover:bg-primary/10">
-                        <Edit className="size-4" />
-                      </Button>
-                    </td>
                   </tr>
                 ))}
               </tbody>
-
             </table>
           </div>
         )}
       </div>
 
-      <Dialog open={!!editingContact} onOpenChange={(open) => !open && setEditingContact(null)}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white max-h-[85vh] overflow-hidden flex flex-col">
-          <DialogHeader><DialogTitle>Edit Contact Details</DialogTitle></DialogHeader>
+      {/* Inline Tag Assignment Modal Popup */}
+      <Dialog open={!!editingTagsFor} onOpenChange={(open) => !open && setEditingTagsFor(null)}>
+        <DialogContent className="bg-slate-900 border-slate-700 text-white max-w-md">
+          <DialogHeader><DialogTitle>Assign Tags to {editingTagsFor?.name || 'Contact'}</DialogTitle></DialogHeader>
 
-          <div className="space-y-4 py-4 overflow-y-auto scrollbar-thin px-1">
-            <div className="space-y-2"><Label className="text-slate-400">Name</Label><Input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
-            <div className="space-y-2"><Label className="text-slate-400">Phone</Label><Input value={editForm.phone} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
-            <div className="space-y-2"><Label className="text-slate-400">Email</Label><Input value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
-            <div className="space-y-2"><Label className="text-slate-400">Company</Label><Input value={editForm.company} onChange={e => setEditForm({ ...editForm, company: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
-
-            {allTags.length > 0 && (
-              <div className="pt-2">
-                <Label className="text-slate-400 mb-2 block">Automation Tags</Label>
-                <div className="flex flex-wrap gap-2">
-                  {allTags.map(tag => {
-                    const isSelected = editForm.tags.includes(tag.id);
-                    return (
-                      <div
-                        key={tag.id}
-                        onClick={() => setEditForm(prev => ({
-                          ...prev, tags: isSelected ? prev.tags.filter(t => t !== tag.id) : [...prev.tags, tag.id]
-                        }))}
-                        className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors border select-none"
-                        style={{
-                          backgroundColor: isSelected ? `${tag.color}30` : 'transparent',
-                          borderColor: isSelected ? tag.color : '#334155',
-                          color: isSelected ? '#fff' : '#94a3b8'
-                        }}
-                      >
-                        {tag.name}
-                      </div>
-                    );
-                  })}
-                </div>
+          <div className="py-4">
+            {allTags.length === 0 ? (
+              <p className="text-slate-500 text-sm italic">No tags exist in your account. Create some first!</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {allTags.map(tag => {
+                  const isSelected = editingTagsFor?.tags?.some(t => t.id === tag.id);
+                  return (
+                    <div
+                      key={tag.id}
+                      onClick={() => toggleInlineTag(editingTagsFor!.id, tag)}
+                      className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors border select-none hover:opacity-80"
+                      style={{
+                        backgroundColor: isSelected ? `${tag.color}30` : 'transparent',
+                        borderColor: isSelected ? tag.color : '#334155',
+                        color: isSelected ? '#fff' : '#94a3b8'
+                      }}
+                    >
+                      {tag.name} {isSelected && <span className="ml-1">×</span>}
+                    </div>
+                  );
+                })}
               </div>
             )}
-
-            {customFields.length > 0 && <div className="border-t border-slate-800 my-4 pt-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Custom Fields</div>}
-
-            {customFields.map(cf => (
-              <div key={cf.id} className="space-y-2">
-                <Label className="text-slate-400">{cf.field_name}</Label>
-                <textarea
-                  value={editForm.custom_values[cf.id] || ''}
-                  onChange={e => setEditForm(prev => ({ ...prev, custom_values: { ...prev.custom_values, [cf.id]: e.target.value } }))}
-                  className="w-full min-h-[80px] bg-slate-950 border border-slate-700 rounded-md p-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none resize-y"
-                  placeholder={`Enter ${cf.field_name.toLowerCase()}...`}
-                />
-              </div>
-            ))}
           </div>
-
-          <DialogFooter className="pt-2 border-t border-slate-800 mt-2">
-            <Button variant="outline" onClick={() => setEditingContact(null)} className="border-slate-700 text-slate-300 hover:bg-slate-800">Cancel</Button>
-            <Button onClick={saveContactEdit} className="bg-primary hover:bg-primary/90 text-white">Save Changes</Button>
-          </DialogFooter>
+          <div className="text-xs text-slate-500 text-center">Changes are saved automatically.</div>
         </DialogContent>
       </Dialog>
     </div>
