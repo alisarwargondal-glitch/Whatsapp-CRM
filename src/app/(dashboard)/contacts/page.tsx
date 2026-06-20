@@ -96,15 +96,12 @@ export default function ContactsDirectory() {
     async function loadInitialData() {
       setLoading(true);
 
-      // Load Folders
       const { data: folderData } = await supabase.from('folders').select('*').eq('account_id', accountId).order('name');
       if (folderData) setFolders(folderData);
 
-      // Load Tags (For Automations / Filtering)
       const { data: tagData } = await supabase.from('tags').select('*').eq('account_id', accountId).order('name');
       if (tagData) setAllTags(tagData);
 
-      // Load Custom Fields
       const { data: fieldsData } = await supabase.from('custom_fields').select('id, field_name').order('field_name');
 
       if (fieldsData) {
@@ -117,7 +114,6 @@ export default function ContactsDirectory() {
           newOrder.push(field.id);
         });
 
-        // Pull saved adjustments from Browser LocalStorage safely
         const savedOrder = localStorage.getItem('crm_col_order');
         const savedVis = localStorage.getItem('crm_col_vis');
         const savedWidths = localStorage.getItem('crm_col_widths');
@@ -200,10 +196,7 @@ export default function ContactsDirectory() {
 
       const contactIds = contactsData.map(c => c.id);
 
-      // Fetch Custom Values
       const { data: customValuesData } = await supabase.from('contact_custom_values').select('*').in('contact_id', contactIds);
-
-      // Fetch Assigned Tags
       const { data: contactTagsData } = await supabase.from('contact_tags').select('contact_id, tag_id, tags(id, name, color)').in('contact_id', contactIds);
 
       const formattedContacts = contactsData.map(c => {
@@ -211,7 +204,6 @@ export default function ContactsDirectory() {
         const customMap: Record<string, string> = {};
         cVals.forEach(cv => { customMap[cv.custom_field_id] = cv.value; });
 
-        // Map standard tags
         const myTags = contactTagsData?.filter(ct => ct.contact_id === c.id).map(ct => ct.tags as unknown as TagItem).filter(Boolean) || [];
 
         return { ...c, custom_values: customMap, tags: myTags };
@@ -226,7 +218,6 @@ export default function ContactsDirectory() {
   // --- FILTERING LOGIC ---
 
   const displayedContacts = contacts.filter(contact => {
-    // 1. Search Filter
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       const matchesSearch =
@@ -236,21 +227,17 @@ export default function ContactsDirectory() {
         contact.company?.toLowerCase().includes(q);
       if (!matchesSearch) return false;
     }
-
-    // 2. Tag Filter
     if (tagFilter.length > 0) {
       if (!contact.tags || contact.tags.length === 0) return false;
       const hasMatchingTag = contact.tags.some(t => tagFilter.includes(t.id));
       if (!hasMatchingTag) return false;
     }
-
     return true;
   });
 
   const toggleFilterTag = (tagId: string) => {
     setTagFilter(prev => prev.includes(tagId) ? prev.filter(id => id !== tagId) : [...prev, tagId]);
   };
-
 
   // --- ACTIONS ---
 
@@ -265,7 +252,6 @@ export default function ContactsDirectory() {
     setFolders(prev => prev.filter(f => f.id !== folderId));
   }
 
-  // Handle Bulk Contact Selection
   const toggleSelectAll = () => {
     if (selectedContacts.size === displayedContacts.length) setSelectedContacts(new Set());
     else setSelectedContacts(new Set(displayedContacts.map(c => c.id)));
@@ -291,7 +277,6 @@ export default function ContactsDirectory() {
     }
   }
 
-  // Handle Explicit View Column Toggles
   const handleToggleColumn = (colId: string) => {
     setVisibleColumns(prev => {
       const next = { ...prev, [colId]: !prev[colId] };
@@ -300,7 +285,6 @@ export default function ContactsDirectory() {
     });
   };
 
-  // Editing Contacts logic
   function handleEditClick(contact: Contact) {
     setEditForm({
       name: contact.name || '',
@@ -316,7 +300,6 @@ export default function ContactsDirectory() {
   async function saveContactEdit() {
     if (!editingContact) return;
 
-    // 1. Update Base Fields
     const { error: baseError } = await supabase
       .from('contacts')
       .update({ name: editForm.name, phone: editForm.phone, email: editForm.email, company: editForm.company })
@@ -327,7 +310,6 @@ export default function ContactsDirectory() {
       return;
     }
 
-    // 2. Update Custom Fields 
     const customValuesArray = Object.entries(editForm.custom_values).map(([id, val]) => ({
       contact_id: editingContact.id,
       custom_field_id: id,
@@ -338,7 +320,6 @@ export default function ContactsDirectory() {
       await supabase.from('contact_custom_values').upsert(customValuesArray, { onConflict: 'contact_id, custom_field_id' });
     }
 
-    // 3. Update Automation Tags
     const currentTagIds = editingContact.tags?.map(t => t.id) || [];
     const newTagIds = editForm.tags;
 
@@ -353,8 +334,6 @@ export default function ContactsDirectory() {
     }
 
     toast.success("Contact updated!");
-
-    // Optimistic UI Update
     const updatedTags = allTags.filter(t => newTagIds.includes(t.id));
     setContacts(prev => prev.map(c => c.id === editingContact.id ? { ...c, ...editForm, tags: updatedTags } : c));
     setEditingContact(null);
@@ -387,7 +366,7 @@ export default function ContactsDirectory() {
       return next;
     });
     const th = document.querySelector(`th[data-colid="${colId}"]`) as HTMLElement;
-    if (th) th.style.width = 'auto';
+    if (th) th.style.width = '200px'; // FIX: Snap to default exactly 200px
   };
 
   function getColumnLabel(colId: string) {
@@ -499,7 +478,6 @@ export default function ContactsDirectory() {
             </Button>
           )}
 
-          {/* Connected Search Bar */}
           <div className="relative">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <Input
@@ -513,7 +491,6 @@ export default function ContactsDirectory() {
             )}
           </div>
 
-          {/* New Filter By Tag Dropdown */}
           <div className="relative">
             <Button variant="outline" className={`border-slate-700 bg-slate-950 text-slate-300 ${tagFilter.length > 0 ? 'border-primary/50 text-primary' : ''}`} onClick={() => { setShowTagFilterMenu(!showTagFilterMenu); setShowColumnMenu(false); }}>
               <TagIcon className="size-4 mr-2" /> Filter Tags
@@ -543,7 +520,6 @@ export default function ContactsDirectory() {
             )}
           </div>
 
-          {/* Columns Dropdown */}
           <div className="relative">
             <Button variant="outline" className="border-slate-700 bg-slate-950 text-slate-300" onClick={() => { setShowColumnMenu(!showColumnMenu); setShowTagFilterMenu(false); }}>
               <Settings2 className="size-4 mr-2" /> Columns
@@ -583,7 +559,8 @@ export default function ContactsDirectory() {
           </div>
         ) : (
           <div className="flex-1 overflow-auto scrollbar-thin w-full">
-            <table className="w-full text-left table-fixed border-collapse min-w-[800px]">
+            {/* FIX: min-w-max added to strictly enforce column widths, ghost column added to absorb space */}
+            <table className="w-full text-left table-fixed border-collapse min-w-max">
               <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10">
                 <tr>
                   <th className="px-4 py-3 border-r border-slate-800/50 w-[50px] shrink-0 align-top">
@@ -603,7 +580,7 @@ export default function ContactsDirectory() {
                       style={{
                         resize: 'horizontal',
                         overflow: 'hidden',
-                        width: columnWidths[col] ? `${columnWidths[col]}px` : 'auto',
+                        width: columnWidths[col] ? `${columnWidths[col]}px` : '200px', // Strict Default
                         minWidth: 150,
                         maxWidth: 800
                       }}
@@ -615,13 +592,17 @@ export default function ContactsDirectory() {
                         onDrop={(e) => handleDrop(e, col)}
                         onDoubleClick={() => handleDoubleClickResize(col)}
                         className="flex items-center gap-2 w-full h-full cursor-grab active:cursor-grabbing hover:text-white px-2"
-                        title="Double-click to auto-size"
+                        title="Double-click to snap to default width"
                       >
                         <GripHorizontal className="size-3 text-slate-600 shrink-0" />
                         <span className="truncate font-medium">{getColumnLabel(col)}</span>
                       </div>
                     </th>
                   ))}
+
+                  {/* THE GHOST COLUMN - Acts as a spring to prevent browser squishing */}
+                  <th className="w-full min-w-[40px]"></th>
+
                   <th className="px-4 py-3 font-medium text-right sticky right-0 bg-slate-950/95 w-[80px]">Actions</th>
                 </tr>
               </thead>
@@ -642,6 +623,9 @@ export default function ContactsDirectory() {
                         {renderCellContent(contact, col)}
                       </td>
                     ))}
+
+                    {/* GHOST COLUMN CELL */}
+                    <td className="w-full min-w-[40px]"></td>
 
                     <td className="px-4 py-3 text-right sticky right-0 bg-slate-900 group-hover:bg-slate-800/40 border-l border-slate-800/50 align-top">
                       <Button variant="ghost" size="icon" onClick={() => handleEditClick(contact)} className="size-8 text-slate-400 hover:text-primary hover:bg-primary/10">
@@ -666,7 +650,6 @@ export default function ContactsDirectory() {
             <div className="space-y-2"><Label className="text-slate-400">Email</Label><Input value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
             <div className="space-y-2"><Label className="text-slate-400">Company</Label><Input value={editForm.company} onChange={e => setEditForm({ ...editForm, company: e.target.value })} className="bg-slate-950 border-slate-700 text-white" /></div>
 
-            {/* Tag Selection UI */}
             {allTags.length > 0 && (
               <div className="pt-2">
                 <Label className="text-slate-400 mb-2 block">Automation Tags</Label>
