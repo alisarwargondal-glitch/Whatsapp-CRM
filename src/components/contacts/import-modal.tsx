@@ -41,7 +41,10 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
   if (lines.length < 2) return [];
 
   const headerLine = lines[0];
-  const headers = headerLine.split(',').map((h) => h.trim().toLowerCase().replace(/["']/g, ''));
+  // Normalize the CSV headers: lowercase them and strip special characters/spaces
+  const headers = headerLine.split(',').map((h) =>
+    h.trim().toLowerCase().replace(/["']/g, '').replace(/[^a-z0-9]/g, '')
+  );
 
   const phoneIdx = headers.indexOf('phone');
   if (phoneIdx === -1) return [];
@@ -50,11 +53,14 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
 
-  // Match existing columns to indices dynamically
-  const customFieldMappings = dynamicCustomFields.map(cf => ({
-    id: cf.id,
-    index: headers.indexOf(cf.field_name.toLowerCase().trim())
-  })).filter(m => m.index >= 0);
+  // Normalize CRM custom field names the exact same way for a flawless match
+  const customFieldMappings = dynamicCustomFields.map(cf => {
+    const normalizedCrmName = cf.field_name.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+    return {
+      id: cf.id,
+      index: headers.indexOf(normalizedCrmName)
+    };
+  }).filter(m => m.index >= 0);
 
   const rows: ParsedRow[] = [];
   for (let i = 1; i < lines.length; i++) {
@@ -79,7 +85,6 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
     const phone = values[phoneIdx]?.replace(/["']/g, '').trim();
     if (!phone) continue;
 
-    // Gather mapped dynamic metrics properties
     const customFieldsMap: Record<string, string> = {};
     customFieldMappings.forEach(m => {
       const val = values[m.index]?.replace(/["']/g, '').trim();
@@ -96,6 +101,47 @@ function parseCSV(text: string, dynamicCustomFields: CustomField[]): ParsedRow[]
   }
 
   return rows;
+}
+const rows: ParsedRow[] = [];
+for (let i = 1; i < lines.length; i++) {
+  const line = lines[i].trim();
+  if (!line) continue;
+
+  const values: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (const char of line) {
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      values.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  values.push(current.trim());
+
+  const phone = values[phoneIdx]?.replace(/["']/g, '').trim();
+  if (!phone) continue;
+
+  // Gather mapped dynamic metrics properties
+  const customFieldsMap: Record<string, string> = {};
+  customFieldMappings.forEach(m => {
+    const val = values[m.index]?.replace(/["']/g, '').trim();
+    if (val) customFieldsMap[m.id] = val;
+  });
+
+  rows.push({
+    phone,
+    name: nameIdx >= 0 ? values[nameIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
+    email: emailIdx >= 0 ? values[emailIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
+    company: companyIdx >= 0 ? values[companyIdx]?.replace(/["']/g, '').trim() || undefined : undefined,
+    customFieldsMap
+  });
+}
+
+return rows;
 }
 
 export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps) {
