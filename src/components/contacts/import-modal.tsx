@@ -384,8 +384,10 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
         onImported();
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Import failed';
-      toast.error(message);
+      console.error("CRITICAL IMPORT ERROR DETECTED:", err);
+      // This will show you exactly what column, constraint, or table is broken:
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Import Error: ${message}`, { duration: 10000 });
     } finally {
       setImporting(false);
     }
