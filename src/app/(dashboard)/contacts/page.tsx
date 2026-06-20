@@ -139,48 +139,6 @@ export default function ContactsDirectory() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, supabase]);
 
-  // ResizeObserver for Column Widths
-  useEffect(() => {
-    if (!activeFolder || contacts.length === 0) return;
-    const thElements = document.querySelectorAll('.resizable-th');
-    if (thElements.length === 0) return;
-
-    let timeoutId: NodeJS.Timeout;
-
-    const observer = new ResizeObserver((entries) => {
-      clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => {
-        setColumnWidths(prev => {
-          const next = { ...prev };
-          let hasChanges = false;
-
-          entries.forEach(entry => {
-            const colId = entry.target.getAttribute('data-colid');
-            const newWidth = Math.round(entry.contentRect.width);
-
-            if (colId && next[colId] !== newWidth && newWidth > 120) {
-              next[colId] = newWidth;
-              hasChanges = true;
-            }
-          });
-
-          if (hasChanges) {
-            localStorage.setItem('crm_col_widths', JSON.stringify(next));
-            return next;
-          }
-          return prev;
-        });
-      }, 200);
-    });
-
-    thElements.forEach(th => observer.observe(th));
-
-    return () => {
-      observer.disconnect();
-      clearTimeout(timeoutId);
-    };
-  }, [activeFolder, contacts, columnOrder, visibleColumns]);
-
   // 2. Fetch Contacts & Assigned Tags for Active Folder
   useEffect(() => {
     if (!activeFolder || !accountId) return;
@@ -339,7 +297,7 @@ export default function ContactsDirectory() {
     setEditingContact(null);
   }
 
-  // --- DRAG, DROP, AND RESIZE LOGIC ---
+  // --- DRAG, DROP, AND SAFE RESIZE LOGIC ---
 
   const handleDragStart = (e: React.DragEvent, colId: string) => e.dataTransfer.setData('text/plain', colId);
 
@@ -358,6 +316,20 @@ export default function ContactsDirectory() {
     localStorage.setItem('crm_col_order', JSON.stringify(newOrder));
   };
 
+  // FIX: Mouse Up Capture Event. Completely replaces the buggy ResizeObserver.
+  const handleMouseUpResize = (colId: string, e: React.MouseEvent<HTMLTableCellElement>) => {
+    const newWidth = Math.round(e.currentTarget.getBoundingClientRect().width);
+
+    // Only trigger a save if the width actually changed
+    if (columnWidths[colId] !== newWidth) {
+      setColumnWidths(prev => {
+        const next = { ...prev, [colId]: newWidth };
+        localStorage.setItem('crm_col_widths', JSON.stringify(next));
+        return next;
+      });
+    }
+  };
+
   const handleDoubleClickResize = (colId: string) => {
     setColumnWidths(prev => {
       const next = { ...prev };
@@ -366,7 +338,7 @@ export default function ContactsDirectory() {
       return next;
     });
     const th = document.querySelector(`th[data-colid="${colId}"]`) as HTMLElement;
-    if (th) th.style.width = '200px'; // FIX: Snap to default exactly 200px
+    if (th) th.style.width = '200px';
   };
 
   function getColumnLabel(colId: string) {
@@ -559,7 +531,6 @@ export default function ContactsDirectory() {
           </div>
         ) : (
           <div className="flex-1 overflow-auto scrollbar-thin w-full">
-            {/* FIX: min-w-max added to strictly enforce column widths, ghost column added to absorb space */}
             <table className="w-full text-left table-fixed border-collapse min-w-max">
               <thead className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-slate-400 z-10">
                 <tr>
@@ -576,11 +547,12 @@ export default function ContactsDirectory() {
                     <th
                       key={col}
                       data-colid={col}
-                      className="resizable-th px-2 py-3 border-r border-slate-800/50 hover:bg-slate-800 transition-colors align-top group relative"
+                      onMouseUp={(e) => handleMouseUpResize(col, e)} // FIX: Fire only when mouse clicks up!
+                      className="px-2 py-3 border-r border-slate-800/50 hover:bg-slate-800 transition-colors align-top group relative"
                       style={{
                         resize: 'horizontal',
                         overflow: 'hidden',
-                        width: columnWidths[col] ? `${columnWidths[col]}px` : '200px', // Strict Default
+                        width: columnWidths[col] ? `${columnWidths[col]}px` : '200px',
                         minWidth: 150,
                         maxWidth: 800
                       }}
@@ -600,7 +572,6 @@ export default function ContactsDirectory() {
                     </th>
                   ))}
 
-                  {/* THE GHOST COLUMN - Acts as a spring to prevent browser squishing */}
                   <th className="w-full min-w-[40px]"></th>
 
                   <th className="px-4 py-3 font-medium text-right sticky right-0 bg-slate-950/95 w-[80px]">Actions</th>
@@ -624,7 +595,6 @@ export default function ContactsDirectory() {
                       </td>
                     ))}
 
-                    {/* GHOST COLUMN CELL */}
                     <td className="w-full min-w-[40px]"></td>
 
                     <td className="px-4 py-3 text-right sticky right-0 bg-slate-900 group-hover:bg-slate-800/40 border-l border-slate-800/50 align-top">
