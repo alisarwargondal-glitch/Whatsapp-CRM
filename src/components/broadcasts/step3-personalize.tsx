@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ArrowLeft, ArrowRight, Eye, Loader2 } from 'lucide-react';
+import { extractVariableIndices } from '@/lib/whatsapp/template-validators';
 
 interface MessageTemplateWithVariations extends MessageTemplate {
   text_variations?: string[];
@@ -113,19 +114,17 @@ export function Step3Personalize({
     };
   }, []);
 
+  // Use our updated string variable extractor here
   const placeholders = useMemo(() => {
-    const matches = template.body_text.match(/\{\{(\d+)\}\}/g);
-    if (!matches) return [];
-    return [...new Set(matches)].sort();
+    return extractVariableIndices(template.body_text);
   }, [template.body_text]);
 
   const unmappedKeys = useMemo(() => {
     const missing: string[] = [];
-    for (const placeholder of placeholders) {
-      const key = placeholder.replace(/^\{\{|\}\}$/g, '');
+    for (const key of placeholders) {
       const mapping = variables[key];
       if (!mapping || !mapping.value?.trim()) {
-        missing.push(placeholder);
+        missing.push(`{{${key}}}`);
       }
     }
     return missing;
@@ -146,10 +145,10 @@ export function Step3Personalize({
       : new Map<string, string>();
 
     let text = template.body_text;
-    for (const placeholder of placeholders) {
-      const key = placeholder.replace(/^\{\{|\}\}$/g, '');
+    for (const key of placeholders) {
       const mapping = variables[key];
-      let replacement = placeholder;
+      const placeholderStr = `{{${key}}}`;
+      let replacement = placeholderStr;
 
       if (mapping) {
         if (mapping.type === 'static' && mapping.value) {
@@ -161,12 +160,12 @@ export function Step3Personalize({
             email: contact.email,
             company: contact.company,
           };
-          replacement = fieldMap[mapping.value] ?? placeholder;
+          replacement = fieldMap[mapping.value] ?? placeholderStr;
         } else if (mapping.type === 'custom_field' && mapping.value) {
-          replacement = customValues.get(mapping.value) || placeholder;
+          replacement = customValues.get(mapping.value) || placeholderStr;
         }
       }
-      text = text.replaceAll(placeholder, replacement);
+      text = text.replaceAll(placeholderStr, replacement);
     }
     return text;
   }, [
@@ -215,18 +214,17 @@ export function Step3Personalize({
         </div>
       ) : (
         <div className="space-y-4">
-          {placeholders.map((placeholder) => {
-            const key = placeholder.replace(/^\{\{|\}\}$/g, '');
+          {placeholders.map((key) => {
             const mapping = variables[key] ?? { type: 'static', value: '' };
 
             return (
               <div
-                key={placeholder}
+                key={key}
                 className="rounded-xl border border-slate-800 bg-slate-900/50 p-4"
               >
                 <div className="mb-3 flex items-center gap-2">
                   <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono font-medium text-primary">
-                    {placeholder}
+                    {`{{${key}}}`}
                   </span>
                 </div>
 
