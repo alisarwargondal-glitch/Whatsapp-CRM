@@ -14,12 +14,11 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "WhatsApp CRM",
   description: "Self-hostable WhatsApp CRM.",
-  manifest: "/manifest.json", // <-- The comma here keeps things perfectly structured!
+  manifest: "/manifest.json",
   robots: {
     index: false,
     follow: false,
   },
-},
   icons: {
     icon: [{ url: "/icon" }],
   },
