@@ -23,38 +23,9 @@ interface BroadcastResult {
   error?: string
 }
 
-/**
- * Two input shapes are accepted:
- *
- *   NEW (preferred — supports per-recipient variable substitution):
- *     {
- *       recipients: Array<{ phone: string; params: string[] }>,
- *       template_name, template_language
- *     }
- *
- *   LEGACY (all phones receive the same params — kept so existing
- *   callers don't break):
- *     {
- *       phone_numbers: string[],
- *       template_params: string[],
- *       template_name, template_language
- *     }
- *
- * Previous implementation only supported the legacy shape, and the
- * sending hook was forced to ship every batch with `templateParams[0]`
- * — meaning every recipient got contact-0's personalization. The new
- * shape is what actually fixes that.
- */
 interface NewRecipient {
   phone: string
-  /** Body variable values, one per {{N}}. Legacy field. */
   params?: string[]
-  /**
-   * Structured per-send values (header text variable, media URL
-   * override, URL/COPY_CODE button values). When set, takes
-   * precedence over `params` for the body too — see
-   * sendTemplateMessage for the merge rules.
-   */
   messageParams?: SendTimeParams
 }
 
@@ -71,18 +42,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Per-user broadcast budget. Note: this limits how often a user
-    // can *start* a campaign, not how many messages go out inside
-    // one — the fan-out loop below runs without additional gating.
     const limit = checkRateLimit(`broadcast:${user.id}`, RATE_LIMITS.broadcast)
     if (!limit.success) {
       return rateLimitResponse(limit)
     }
 
-    // Resolve the caller's account_id. whatsapp_config + templates
-    // + broadcasts are all account-scoped post-multi-user, so the
-    // old `.eq('user_id', user.id)` filters miss every row created
-    // by a teammate.
     const { data: profile } = await supabase
       .from('profiles')
       .select('account_id')
@@ -97,15 +61,21 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
+
+    // THE FIX: We explicitly extract the image URLs from the frontend request!
     const {
       recipients: newRecipients,
       phone_numbers,
       template_name,
       template_language,
       template_params,
+      headerMediaUrl,
+      header_media_url
     } = body
 
-    // Normalize to a list of {phone, params} regardless of shape.
+    // Catch whichever naming convention the frontend passed
+    const finalMediaUrlToPass = headerMediaUrl || header_media_url;
+
     let recipients: NewRecipient[]
     if (Array.isArray(newRecipients) && newRecipients.length > 0) {
       recipients = newRecipients
@@ -152,11 +122,6 @@ export async function POST(request: Request) {
 
     const accessToken = decrypt(config.access_token)
 
-    // Load the template row once so sendTemplateMessage can build
-    // header + button components on each iteration. Loading inside
-    // the loop would N+1 against Supabase for every recipient.
-    // Guard against a malformed local row crashing every send in
-    // the loop with the same opaque TypeError — fail loudly once.
     const { data: rawTemplateRow } = await supabase
       .from('message_templates')
       .select('*')
@@ -164,6 +129,7 @@ export async function POST(request: Request) {
       .eq('name', template_name)
       .eq('language', template_language || 'en_US')
       .maybeSingle()
+
     if (rawTemplateRow && !isMessageTemplate(rawTemplateRow)) {
       return NextResponse.json(
         {
@@ -192,8 +158,6 @@ export async function POST(request: Request) {
         continue
       }
 
-      // Retry with phone variants on "not in allowed list" so numbers
-      // that differ only in a trunk-prefix 0 still reach recipients.
       const variants = phoneVariants(sanitized)
       let sentMessageId: string | null = null
       let lastError: string | null = null
@@ -207,7 +171,11 @@ export async function POST(request: Request) {
             templateName: template_name,
             language: template_language || 'en_US',
             template: templateRow ?? undefined,
-            messageParams: recipient.messageParams,
+            // THE FIX: We inject the URL securely into messageParams so the builder finally sees it!
+            messageParams: {
+              ...(recipient.messageParams || {}),
+              ...(finalMediaUrlToPass ? { headerMediaUrl: finalMediaUrlToPass } : {})
+            },
             params: recipient.params ?? [],
           })
           sentMessageId = result.messageId
@@ -221,7 +189,6 @@ export async function POST(request: Request) {
             break
           }
           lastError = errorMessage
-          // retry with next variant
         }
       }
 
