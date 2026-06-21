@@ -4,7 +4,8 @@ import { extractVariableIndices } from './template-validators';
 export interface SendTimeParams {
   body?: string[];
   headerText?: string;
-  headerMediaId?: string; // URL parameter entirely removed
+  headerMediaUrl?: string;
+  headerMediaId?: string;
   buttonParams?: Record<number, string>;
 }
 
@@ -18,12 +19,12 @@ export type MetaSendComponent =
     parameters: MetaSendParameter[];
   };
 
-// STRICTLY ONLY ID. No Links. No Strings.
+// Defined exactly to Meta's strict specifications
 type MetaSendParameter =
   | { type: 'text'; text: string }
-  | { type: 'image'; image: { id: number } }
-  | { type: 'video'; video: { id: number } }
-  | { type: 'document'; document: { id: number } }
+  | { type: 'image'; image: { link?: string; id?: number } }
+  | { type: 'video'; video: { link?: string; id?: number } }
+  | { type: 'document'; document: { link?: string; id?: number } }
   | { type: 'coupon_code'; coupon_code: string }
   | { type: 'payload'; payload: string };
 
@@ -32,7 +33,7 @@ function buildHeaderComponent(
   params: SendTimeParams,
 ): MetaSendComponent | null {
   const headerType = template.header_type;
-  if (!headerType) return null;
+  if (!headerType || headerType === 'none') return null;
 
   if (headerType === 'text') {
     const varCount = extractVariableIndices(template.header_content ?? '').length;
@@ -47,21 +48,30 @@ function buildHeaderComponent(
     };
   }
 
-  // We ONLY accept a real Media ID passed at send time.
-  // We explicitly DO NOT fallback to template.header_handle because that is just a sample ID and causes #100 errors.
-  const id = params.headerMediaId;
+  // Grab whatever the database has stored
+  const link = params.headerMediaUrl || template.header_media_url;
+  const idOrUrl = params.headerMediaId || template.header_handle;
 
-  if (!id) {
-    throw new Error(`CRITICAL: Meta requires a valid Media ID to send this broadcast. The sample image you uploaded during template creation cannot be reused.`);
+  let mediaPayload: any = null;
+
+  // 1. Prefer a URL (Link). This is the standard CRM way to satisfy Meta.
+  // By NOT including an 'id' key here, we completely bypass the JSON Schema crash.
+  if (typeof link === 'string' && link.includes('http')) {
+    mediaPayload = { link: link.trim() };
+  }
+  else if (typeof idOrUrl === 'string' && idOrUrl.includes('http')) {
+    mediaPayload = { link: idOrUrl.trim() };
+  }
+  // 2. Check for a valid Meta Media ID (Must be purely numbers, usually 14+ digits)
+  else if (idOrUrl && /^\d+$/.test(String(idOrUrl).trim())) {
+    mediaPayload = { id: parseInt(String(idOrUrl).trim(), 10) };
   }
 
-  const numId = parseInt(String(id).trim(), 10);
-
-  if (isNaN(numId)) {
-    throw new Error(`CRITICAL: Meta expects the Media ID to be a strict number. Received: ${id}`);
+  // If the payload is STILL empty, it means the database only has Meta's "Sample Handle" 
+  // (e.g. 4::aW1h...) which CANNOT be used to send a broadcast.
+  if (!mediaPayload) {
+    throw new Error(`Meta API Rule: You must provide a valid Image URL or a freshly uploaded Media ID to send this broadcast. The template sample image cannot be reused.`);
   }
-
-  const mediaPayload = { id: numId };
 
   return {
     type: 'header',
