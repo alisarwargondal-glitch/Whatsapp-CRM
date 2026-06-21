@@ -1,60 +1,26 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Contact, CustomField, MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { ArrowLeft, ArrowRight, Eye, Loader2 } from 'lucide-react';
-import { extractVariableIndices } from '@/lib/whatsapp/template-validators';
+import { ArrowLeft, ArrowRight, Variable, Loader2, Info } from 'lucide-react';
 
-interface MessageTemplateWithVariations extends MessageTemplate {
-  text_variations?: string[];
-}
-
-type VariableType = 'static' | 'field' | 'custom_field';
-
-interface VariableMapping {
-  type: VariableType;
-  value: string;
+interface CustomField {
+  id: string;
+  field_name: string;
 }
 
 interface Step3Props {
-  template: MessageTemplateWithVariations;
-  variables: Record<string, VariableMapping>;
-  onUpdate: (variables: Record<string, VariableMapping>) => void;
+  template: any; // The selected template object
+  variables: Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>;
+  onUpdate: (vars: Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>) => void;
   onNext: () => void;
   onBack: () => void;
-  selectedVariationIdx: number;
-  onVariationChange: (index: number) => void;
+  selectedVariationIdx?: number;
+  onVariationChange?: (idx: number) => void;
 }
-
-const contactFields = [
-  { value: 'name', label: 'Contact Name' },
-  { value: 'phone', label: 'Phone Number' },
-  { value: 'email', label: 'Email Address' },
-  { value: 'company', label: 'Company' },
-];
-
-const SAMPLE_CONTACT: Contact = {
-  id: 'sample',
-  user_id: '',
-  account_id: '',
-  name: 'John Doe',
-  phone: '+1234567890',
-  email: 'john@example.com',
-  company: 'Acme Corp',
-  created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString(),
-};
 
 export function Step3Personalize({
   template,
@@ -62,306 +28,198 @@ export function Step3Personalize({
   onUpdate,
   onNext,
   onBack,
-  selectedVariationIdx,
-  onVariationChange,
+  selectedVariationIdx = 0,
+  onVariationChange
 }: Step3Props) {
+  const supabase = createClient();
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
-  const [loadingFields, setLoadingFields] = useState(true);
-  const [firstContact, setFirstContact] = useState<Contact | null>(null);
-  const [firstContactCustomValues, setFirstContactCustomValues] = useState<
-    Map<string, string>
-  >(new Map());
-  const [loadingPreview, setLoadingPreview] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [detectedVars, setDetectedVars] = useState<string[]>([]);
 
+  // 1. Fetch Custom Fields from Database
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const supabase = createClient();
-      const [fieldsRes, contactRes] = await Promise.all([
-        supabase.from('custom_fields').select('*').order('field_name'),
-        supabase
-          .from('contacts')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-      ]);
-      if (cancelled) return;
-
-      setCustomFields(fieldsRes.data ?? []);
-      setLoadingFields(false);
-
-      const contact = contactRes.data ?? null;
-      setFirstContact(contact);
-
-      if (contact) {
-        const { data: customVals } = await supabase
-          .from('contact_custom_values')
-          .select('custom_field_id, value')
-          .eq('contact_id', contact.id);
-        if (!cancelled) {
-          const map = new Map<string, string>();
-          for (const row of customVals ?? []) {
-            map.set(row.custom_field_id, row.value ?? '');
-          }
-          setFirstContactCustomValues(map);
-        }
+    async function fetchFields() {
+      const { data, error } = await supabase.from('custom_fields').select('id, field_name').order('field_name');
+      if (data) {
+        setCustomFields(data);
       }
-      setLoadingPreview(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+      setLoading(false);
+    }
+    fetchFields();
+  }, [supabase]);
 
-  // Use our updated string variable extractor here
-  const placeholders = useMemo(() => {
-    return extractVariableIndices(template.body_text);
-  }, [template.body_text]);
+  // 2. Parse Template Text to extract {{1}}, {{2}}, etc.
+  useEffect(() => {
+    if (!template) return;
+    const textToParse = (template.header_text || '') + ' ' + (template.body_text || '');
 
-  const unmappedKeys = useMemo(() => {
-    const missing: string[] = [];
-    for (const key of placeholders) {
-      const mapping = variables[key];
-      if (!mapping || !mapping.value?.trim()) {
-        missing.push(`{{${key}}}`);
+    // Regex to find all numbers inside {{ }}
+    const regex = /\{\{(\d+)\}\}/g;
+    const matches = Array.from(textToParse.matchAll(regex));
+
+    // Extract unique variable numbers and sort them
+    const uniqueVars = Array.from(new Set(matches.map(m => m[1]))).sort((a, b) => Number(a) - Number(b));
+    setDetectedVars(uniqueVars);
+
+    // Initialize missing variables in state
+    if (uniqueVars.length > 0) {
+      const updatedVars = { ...variables };
+      let hasChanges = false;
+      uniqueVars.forEach(v => {
+        if (!updatedVars[v]) {
+          updatedVars[v] = { type: 'field', value: 'name' }; // Default to 'name'
+          hasChanges = true;
+        }
+      });
+      if (hasChanges) {
+        onUpdate(updatedVars);
       }
     }
-    return missing;
-  }, [placeholders, variables]);
+  }, [template, variables, onUpdate]);
 
-  function updateVariable(key: string, patch: Partial<VariableMapping>) {
-    const current = variables[key] ?? { type: 'static' as VariableType, value: '' };
+  const handleTypeChange = (varNum: string, newType: 'static' | 'field' | 'custom_field') => {
     onUpdate({
       ...variables,
-      [key]: { ...current, ...patch },
-    });
-  }
-
-  const previewText = useMemo(() => {
-    const contact = firstContact ?? SAMPLE_CONTACT;
-    const customValues = firstContact
-      ? firstContactCustomValues
-      : new Map<string, string>();
-
-    let text = template.body_text;
-    for (const key of placeholders) {
-      const mapping = variables[key];
-      const placeholderStr = `{{${key}}}`;
-      let replacement = placeholderStr;
-
-      if (mapping) {
-        if (mapping.type === 'static' && mapping.value) {
-          replacement = mapping.value;
-        } else if (mapping.type === 'field' && mapping.value) {
-          const fieldMap: Record<string, string | undefined> = {
-            name: contact.name,
-            phone: contact.phone,
-            email: contact.email,
-            company: contact.company,
-          };
-          replacement = fieldMap[mapping.value] ?? placeholderStr;
-        } else if (mapping.type === 'custom_field' && mapping.value) {
-          replacement = customValues.get(mapping.value) || placeholderStr;
-        }
+      [varNum]: {
+        type: newType,
+        value: newType === 'static' ? '' : (newType === 'field' ? 'name' : (customFields[0]?.id || ''))
       }
-      text = text.replaceAll(placeholderStr, replacement);
-    }
-    return text;
-  }, [
-    template.body_text,
-    variables,
-    placeholders,
-    firstContact,
-    firstContactCustomValues,
-  ]);
+    });
+  };
 
-  const previewLabel = firstContact
-    ? firstContact.name || firstContact.phone
-    : 'sample data';
+  const handleValueChange = (varNum: string, newValue: string) => {
+    onUpdate({
+      ...variables,
+      [varNum]: { ...variables[varNum], value: newValue }
+    });
+  };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-white">Personalize Message</h2>
-        <p className="mt-1 text-sm text-slate-400">
-          Map template variables to contact fields, custom fields, or static values.
-        </p>
-      </div>
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
-      {template.text_variations && template.text_variations.length > 1 && (
-        <div className="space-y-1.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-          <Label className="text-xs font-semibold text-amber-400">Select Template Text Variation</Label>
+      {/* Template Variations Selector (If applicable) */}
+      {template.text_variations && template.text_variations.length > 1 && onVariationChange && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+          <Label className="text-slate-300 font-medium flex items-center gap-2">
+            <Variable className="size-4 text-primary" /> Template Variation
+          </Label>
           <select
             value={selectedVariationIdx}
             onChange={(e) => onVariationChange(Number(e.target.value))}
-            className="w-full rounded-md border border-slate-700 bg-slate-800 p-2 text-sm text-white focus:border-primary focus:outline-none"
+            className="w-full bg-slate-950 border border-slate-700 text-slate-200 rounded-lg p-3 text-sm focus:ring-1 focus:ring-primary outline-none"
           >
-            {template.text_variations.map((_, index) => (
-              <option key={index} value={index}>
-                Variation #{index + 1} {index === 0 ? "(Primary)" : ""}
-              </option>
+            {template.text_variations.map((_: any, i: number) => (
+              <option key={i} value={i}>Variation {i + 1}</option>
             ))}
           </select>
         </div>
       )}
 
-      {placeholders.length === 0 ? (
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-6 text-center">
-          <p className="text-sm text-slate-400">
-            This template has no variables to personalize.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {placeholders.map((key) => {
-            const mapping = variables[key] ?? { type: 'static', value: '' };
-
-            return (
-              <div
-                key={key}
-                className="rounded-xl border border-slate-800 bg-slate-900/50 p-4"
-              >
-                <div className="mb-3 flex items-center gap-2">
-                  <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono font-medium text-primary">
-                    {`{{${key}}}`}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-slate-400">
-                      Mapping Type
-                    </label>
-                    <Select
-                      value={mapping.type}
-                      onValueChange={(val) =>
-                        updateVariable(key, {
-                          type: val as VariableType,
-                          value: '',
-                        })
-                      }
-                    >
-                      <SelectTrigger className="w-full border-slate-700 bg-slate-800 text-white">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="border-slate-700 bg-slate-800">
-                        <SelectItem value="static">Static Value</SelectItem>
-                        <SelectItem value="field">Contact Field</SelectItem>
-                        <SelectItem value="custom_field">
-                          Custom Field
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-slate-400">
-                      {mapping.type === 'static' ? 'Value' : 'Field'}
-                    </label>
-                    {mapping.type === 'static' ? (
-                      <Input
-                        value={mapping.value}
-                        onChange={(e) =>
-                          updateVariable(key, { value: e.target.value })
-                        }
-                        placeholder="Enter value..."
-                        className="border-slate-700 bg-slate-800 text-white placeholder:text-slate-500"
-                      />
-                    ) : mapping.type === 'field' ? (
-                      <Select
-                        value={mapping.value || undefined}
-                        onValueChange={(val) =>
-                          updateVariable(key, { value: val || '' })
-                        }
-                      >
-                        <SelectTrigger className="w-full border-slate-700 bg-slate-800 text-white">
-                          <SelectValue placeholder="Select field..." />
-                        </SelectTrigger>
-                        <SelectContent className="border-slate-700 bg-slate-800">
-                          {contactFields.map((field) => (
-                            <SelectItem key={field.value} value={field.value}>
-                              {field.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Select
-                        value={mapping.value || undefined}
-                        onValueChange={(val) =>
-                          updateVariable(key, { value: val || '' })
-                        }
-                      >
-                        <SelectTrigger className="w-full border-slate-700 bg-slate-800 text-white">
-                          <SelectValue
-                            placeholder={
-                              loadingFields
-                                ? 'Loading…'
-                                : customFields.length === 0
-                                  ? 'No custom fields'
-                                  : 'Select custom field…'
-                            }
-                          />
-                        </SelectTrigger>
-                        <SelectContent className="border-slate-700 bg-slate-800">
-                          {customFields.map((f) => (
-                            <SelectItem key={f.id} value={f.id}>
-                              {f.field_name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Live Preview */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <Eye className="h-4 w-4 text-primary" />
-          <p className="text-sm font-medium text-white">Live Preview</p>
-          <span className="text-xs text-slate-500">({previewLabel})</span>
-          {loadingPreview && (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-          )}
-        </div>
-        <div className="rounded-lg bg-[#0e1a12] p-3">
-          <div className="ml-auto max-w-[85%] rounded-lg bg-primary/30 px-3 py-2 shadow-sm">
-            <p className="whitespace-pre-wrap text-sm text-primary">
-              {previewText}
-            </p>
-          </div>
+      {/* Preview Card */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Template Preview</h3>
+        <div className="bg-slate-950/50 p-4 rounded-lg border border-slate-800/50 text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">
+          {template.header_text && <div className="font-bold mb-2">{template.header_text}</div>}
+          {template.body_text}
         </div>
       </div>
 
-      {unmappedKeys.length > 0 && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-          Map every placeholder before continuing — still missing{' '}
-          <span className="font-mono font-semibold">
-            {unmappedKeys.join(', ')}
+      {/* Variables Mapping Engine */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-5">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <h3 className="text-lg font-bold text-white flex items-center gap-2">
+            <Variable className="size-5 text-primary" /> Map Variables
+          </h3>
+          <span className="text-xs font-medium text-slate-500 bg-slate-800 px-2.5 py-1 rounded-full">
+            {detectedVars.length} Found
           </span>
-          .
         </div>
-      )}
 
-      <div className="flex items-center justify-between border-t border-slate-800 pt-4">
-        <Button variant="outline" onClick={onBack} className="border-slate-700 text-slate-300">
-          <ArrowLeft className="h-4 w-4" />
-          Back
+        {loading ? (
+          <div className="flex justify-center py-8"><Loader2 className="size-6 animate-spin text-primary" /></div>
+        ) : detectedVars.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-10 text-slate-500">
+            <Info className="size-8 mb-2 opacity-50" />
+            <p className="text-sm">No variables like {'{{1}}'} found in this template.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {detectedVars.map(varNum => {
+              const currentSetting = variables[varNum] || { type: 'field', value: 'name' };
+
+              return (
+                <div key={varNum} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start bg-slate-950/50 p-4 rounded-lg border border-slate-800/80">
+                  <div className="md:col-span-2 flex items-center h-10">
+                    <span className="bg-primary/20 text-primary font-bold px-3 py-1.5 rounded-md text-sm">
+                      {`{{${varNum}}}`}
+                    </span>
+                  </div>
+
+                  <div className="md:col-span-4">
+                    <select
+                      value={currentSetting.type}
+                      onChange={(e) => handleTypeChange(varNum, e.target.value as any)}
+                      className="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-md p-2.5 text-sm focus:ring-1 focus:ring-primary outline-none"
+                    >
+                      <optgroup label="CRM Data">
+                        <option value="field">Standard Field</option>
+                        {customFields.length > 0 && <option value="custom_field">Custom Field</option>}
+                      </optgroup>
+                      <optgroup label="Manual">
+                        <option value="static">Static Text</option>
+                      </optgroup>
+                    </select>
+                  </div>
+
+                  <div className="md:col-span-6">
+                    {currentSetting.type === 'static' && (
+                      <Input
+                        placeholder="Enter text to replace this variable..."
+                        value={currentSetting.value}
+                        onChange={(e) => handleValueChange(varNum, e.target.value)}
+                        className="bg-slate-900 border-slate-700 text-white"
+                      />
+                    )}
+
+                    {currentSetting.type === 'field' && (
+                      <select
+                        value={currentSetting.value}
+                        onChange={(e) => handleValueChange(varNum, e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-md p-2.5 text-sm focus:ring-1 focus:ring-primary outline-none"
+                      >
+                        <option value="name">Contact Name</option>
+                        <option value="phone">Phone Number</option>
+                        <option value="email">Email Address</option>
+                        <option value="company">Company</option>
+                      </select>
+                    )}
+
+                    {currentSetting.type === 'custom_field' && (
+                      <select
+                        value={currentSetting.value}
+                        onChange={(e) => handleValueChange(varNum, e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-md p-2.5 text-sm focus:ring-1 focus:ring-primary outline-none"
+                      >
+                        {customFields.map(cf => (
+                          <option key={cf.id} value={cf.id}>{cf.field_name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Navigation Controls */}
+      <div className="flex justify-between pt-4 border-t border-slate-800">
+        <Button variant="outline" onClick={onBack} className="border-slate-700 text-slate-300 hover:bg-slate-800">
+          <ArrowLeft className="mr-2 size-4" /> Back
         </Button>
-        <Button
-          onClick={onNext}
-          disabled={unmappedKeys.length > 0}
-          className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          Next
-          <ArrowRight className="h-4 w-4" />
+        <Button onClick={onNext} className="bg-primary hover:bg-primary/90 text-white">
+          Continue to Schedule <ArrowRight className="ml-2 size-4" />
         </Button>
       </div>
     </div>
