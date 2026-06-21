@@ -54,14 +54,19 @@ function buildHeaderComponent(
     throw new Error(`${headerType} header requires a media link or id at send time.`);
   }
 
-  // Create the media payload dynamically. 
-  // By only defining 'link' if a link exists, we ensure 'id' is absent,
-  // preventing the JSON schema 'type' integer validation error.
-  const mediaPayload: { link?: string; id?: string } = {};
+  // FORCE CLEAN PAYLOAD
+  // By creating an object and deleting the 'id' if a 'link' exists, 
+  // we guarantee Meta sees NO 'id' field, satisfying the schema constraint.
+  const mediaPayload: any = {};
   if (link) {
     mediaPayload.link = link;
   } else if (id) {
     mediaPayload.id = id;
+  }
+
+  // Explicitly ensure 'id' is removed if 'link' is provided
+  if (mediaPayload.link) {
+    delete mediaPayload.id;
   }
 
   return {
@@ -75,6 +80,8 @@ function buildHeaderComponent(
     ],
   };
 }
+
+// ... (Keep the rest of the file exactly as it was) ...
 
 function buildBodyComponent(
   template: MessageTemplate,
