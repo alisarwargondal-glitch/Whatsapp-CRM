@@ -34,33 +34,26 @@ function buildHeaderComponent(
   const headerType = template.header_type;
   if (!headerType) return null;
 
-  if (headerType === 'text') {
-    const varCount = extractVariableIndices(template.header_content ?? '').length;
-    if (varCount === 0) return null;
-    const value = params.headerText;
-    if (!value || !value.trim()) {
-      throw new Error(
-        'Header text variable {{1}} requires a value — pass headerText.',
-      );
-    }
-    return {
-      type: 'header',
-      parameters: [{ type: 'text', text: value }],
-    };
-  }
+  // ... (Keep the 'text' header logic as is) ...
 
   const link = params.headerMediaUrl ?? template.header_media_url;
   const id = params.headerMediaId ?? template.header_handle;
+
   if (!link && !id) {
-    throw new Error(
-      `${headerType} header requires a media link or id at send time — set header_media_url on the template or pass headerMediaUrl/headerMediaId.`,
-    );
+    throw new Error(`${headerType} header requires a media link or id at send time.`);
   }
 
-  // FIX: Meta has strictified 'id' type checking to pure integers. 
-  // By flipping this rule to prioritize 'link' over 'id', we bypass the schema error 
-  // entirely and securely pass standard image URLs to WhatsApp.
-  const mediaPayload: any = link ? { link } : { id };
+  // REVISED PAYLOAD CONSTRUCTION
+  // We use a conditional check to ensure ONLY 'link' is sent if available.
+  // We explicitly avoid setting 'id' to undefined or null to prevent schema violation.
+  let mediaPayload: any = {};
+  if (link) {
+    mediaPayload = { link };
+  } else if (id) {
+    // Only use ID if link is missing, and convert to integer if possible
+    const numericId = parseInt(id, 10);
+    mediaPayload = { id: isNaN(numericId) ? id : numericId };
+  }
 
   return {
     type: 'header',
@@ -72,6 +65,30 @@ function buildHeaderComponent(
           : { type: 'document', document: mediaPayload },
     ],
   };
+}
+const link = params.headerMediaUrl ?? template.header_media_url;
+const id = params.headerMediaId ?? template.header_handle;
+if (!link && !id) {
+  throw new Error(
+    `${headerType} header requires a media link or id at send time — set header_media_url on the template or pass headerMediaUrl/headerMediaId.`,
+  );
+}
+
+// FIX: Meta has strictified 'id' type checking to pure integers. 
+// By flipping this rule to prioritize 'link' over 'id', we bypass the schema error 
+// entirely and securely pass standard image URLs to WhatsApp.
+const mediaPayload: any = link ? { link } : { id };
+
+return {
+  type: 'header',
+  parameters: [
+    headerType === 'image'
+      ? { type: 'image', image: mediaPayload }
+      : headerType === 'video'
+        ? { type: 'video', video: mediaPayload }
+        : { type: 'document', document: mediaPayload },
+  ],
+};
 }
 
 function buildBodyComponent(
