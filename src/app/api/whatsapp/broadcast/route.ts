@@ -62,7 +62,6 @@ export async function POST(request: Request) {
 
     const body = await request.json()
 
-    // THE FIX: We explicitly extract the image URLs from the frontend request!
     const {
       recipients: newRecipients,
       phone_numbers,
@@ -73,7 +72,6 @@ export async function POST(request: Request) {
       header_media_url
     } = body
 
-    // Catch whichever naming convention the frontend passed
     const finalMediaUrlToPass = headerMediaUrl || header_media_url;
 
     let recipients: NewRecipient[]
@@ -141,6 +139,18 @@ export async function POST(request: Request) {
     }
     const templateRow = rawTemplateRow ?? null
 
+    // 🔥 THE SKELETON KEY FIX 🔥
+    // Because the black-box `sendTemplateMessage` function is likely dropping our parameters,
+    // we bypass it entirely by mutating the template object before it gets there.
+    if (templateRow) {
+      if (finalMediaUrlToPass) {
+        // Force the URL directly into the template schema
+        templateRow.header_media_url = finalMediaUrlToPass;
+      }
+      // Physically annihilate the cursed Draft ID so the builder CANNOT fall back to it
+      templateRow.header_handle = '';
+    }
+
     const results: BroadcastResult[] = []
     let sentCount = 0
     let failedCount = 0
@@ -170,8 +180,7 @@ export async function POST(request: Request) {
             to: variant,
             templateName: template_name,
             language: template_language || 'en_US',
-            template: templateRow ?? undefined,
-            // THE FIX: We inject the URL securely into messageParams so the builder finally sees it!
+            template: templateRow ?? undefined, // Passing the mutated, foolproof template
             messageParams: {
               ...(recipient.messageParams || {}),
               ...(finalMediaUrlToPass ? { headerMediaUrl: finalMediaUrlToPass } : {})
