@@ -67,18 +67,17 @@ function EditableInput({ initialValue, onSave }: { initialValue: string, onSave:
 function EditableTextarea({ initialValue, onSave }: { initialValue: string, onSave: (val: string) => void }) {
   const [val, setVal] = useState(initialValue);
   useEffect(() => setVal(initialValue), [initialValue]);
-
   return (
     <textarea
       value={val}
       onChange={e => setVal(e.target.value)}
       onBlur={() => { if (val !== initialValue) onSave(val); }}
       rows={1}
-      className="w-full bg-transparent text-sm text-slate-300 outline-none focus:ring-1 focus:ring-primary focus:bg-slate-900 rounded px-1.5 py-1 transition-all border border-transparent hover:border-slate-700/50 resize-y min-h-[32px] scrollbar-thin"
+      // Changed "resize-y" to "resize-none" and added "overflow-hidden" to keep it perfectly clean
+      className="w-full bg-transparent text-sm text-slate-300 outline-none focus:ring-1 focus:ring-primary focus:bg-slate-900 rounded px-1.5 py-1 border border-transparent hover:border-slate-700/50 resize-none min-h-[32px] overflow-hidden"
     />
   );
 }
-
 
 export default function ContactsDirectory() {
   const supabase = createClient();
