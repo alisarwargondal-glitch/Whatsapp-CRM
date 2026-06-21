@@ -5,7 +5,8 @@ import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ArrowLeft, ArrowRight, Variable, Loader2, Info } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Variable, Loader2, Info, UploadCloud, Image as ImageIcon, CheckCircle2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 interface CustomField {
   id: string;
@@ -36,6 +37,9 @@ export function Step3Personalize({
   const [loading, setLoading] = useState(true);
   const [detectedVars, setDetectedVars] = useState<string[]>([]);
 
+  // New State for Image Uploading
+  const [uploadingImage, setUploadingImage] = useState(false);
+
   // 1. Fetch Custom Fields
   useEffect(() => {
     async function fetchFields() {
@@ -48,16 +52,14 @@ export function Step3Personalize({
     fetchFields();
   }, [supabase]);
 
-  // 2. Parse Template Text to extract ANY variable like {{name}}, {{company}}, or {{1}}
+  // 2. Parse Template Text
   useEffect(() => {
     if (!template) return;
     const textToParse = (template.header_text || '') + ' ' + (template.body_text || '');
 
-    // FIX: Regex now captures ANY text inside {{ }}, not just digits!
     const regex = /\{\{([^}]+)\}\}/g;
     const matches = Array.from(textToParse.matchAll(regex));
 
-    // Extract unique variable names and clean up any whitespace
     const uniqueVars = Array.from(new Set(matches.map(m => m[1].trim())));
     setDetectedVars(uniqueVars);
 
@@ -66,7 +68,7 @@ export function Step3Personalize({
       let hasChanges = false;
       uniqueVars.forEach(v => {
         if (!updatedVars[v]) {
-          updatedVars[v] = { type: 'field', value: 'name' }; // Default to standard field 'name'
+          updatedVars[v] = { type: 'field', value: 'name' };
           hasChanges = true;
         }
       });
@@ -93,6 +95,43 @@ export function Step3Personalize({
     });
   };
 
+  // 3. Supabase Image Uploader Logic
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingImage(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
+      const filePath = `broadcasts/${fileName}`;
+
+      // Ensure you have a public bucket named 'media' in your Supabase project!
+      const { error: uploadError } = await supabase.storage
+        .from('media')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('media')
+        .getPublicUrl(filePath);
+
+      // Save the URL to variables so your backend can fetch it as headerMediaUrl
+      onUpdate({
+        ...variables,
+        headerMediaUrl: { type: 'static', value: publicUrl }
+      });
+
+      toast.success("Image uploaded successfully!");
+    } catch (err: any) {
+      console.error("Upload error:", err);
+      toast.error("Failed to upload. Do you have a public bucket named 'media' in Supabase?");
+    } finally {
+      setUploadingImage(false);
+    }
+  }
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
@@ -110,6 +149,51 @@ export function Step3Personalize({
               <option key={i} value={i}>Variation {i + 1}</option>
             ))}
           </select>
+        </div>
+      )}
+
+      {/* NEW: Supabase Image Uploader (Only shows if template requires an image) */}
+      {template.header_type === 'image' && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+          <h3 className="text-lg font-bold text-white flex items-center gap-2">
+            <ImageIcon className="size-5 text-primary" /> Header Image Required
+          </h3>
+          <p className="text-sm text-slate-400">
+            This template requires an image to send. Upload your property photo or logo here.
+          </p>
+
+          <div className="relative group border-2 border-dashed border-slate-700 hover:border-primary/50 rounded-xl p-8 flex flex-col items-center justify-center transition-all bg-slate-950/50">
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleImageUpload}
+              disabled={uploadingImage}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
+            />
+
+            {uploadingImage ? (
+              <div className="flex flex-col items-center text-primary">
+                <Loader2 className="size-8 animate-spin mb-3" />
+                <span className="text-sm font-medium">Uploading to Supabase...</span>
+              </div>
+            ) : variables['headerMediaUrl']?.value ? (
+              <div className="flex flex-col items-center">
+                <div className="relative size-32 mb-3 rounded-lg overflow-hidden border border-slate-800 shadow-md">
+                  <img src={variables['headerMediaUrl'].value} alt="Preview" className="w-full h-full object-cover" />
+                </div>
+                <span className="text-sm font-medium text-emerald-400 flex items-center gap-1.5">
+                  <CheckCircle2 className="size-4" /> Image Uploaded & Ready
+                </span>
+                <span className="text-xs text-slate-500 mt-1">Click or drag a new image to replace</span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center text-slate-400 group-hover:text-primary transition-colors">
+                <UploadCloud className="size-10 mb-3" />
+                <span className="text-sm font-medium">Click or drag an image here</span>
+                <span className="text-xs mt-1 opacity-70">JPG or PNG</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
