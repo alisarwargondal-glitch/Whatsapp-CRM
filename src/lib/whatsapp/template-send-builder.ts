@@ -34,26 +34,32 @@ function buildHeaderComponent(
   const headerType = template.header_type;
   if (!headerType) return null;
 
-  // ... (Keep the 'text' header logic as is) ...
+  if (headerType === 'text') {
+    const varCount = extractVariableIndices(template.header_content ?? '').length;
+    if (varCount === 0) return null;
+    const value = params.headerText;
+    if (!value || !value.trim()) {
+      throw new Error(
+        'Header text variable {{1}} requires a value — pass headerText.',
+      );
+    }
+    return {
+      type: 'header',
+      parameters: [{ type: 'text', text: value }],
+    };
+  }
 
   const link = params.headerMediaUrl ?? template.header_media_url;
   const id = params.headerMediaId ?? template.header_handle;
 
   if (!link && !id) {
-    throw new Error(`${headerType} header requires a media link or id at send time.`);
+    throw new Error(
+      `${headerType} header requires a media link or id at send time.`,
+    );
   }
 
-  // REVISED PAYLOAD CONSTRUCTION
-  // We use a conditional check to ensure ONLY 'link' is sent if available.
-  // We explicitly avoid setting 'id' to undefined or null to prevent schema violation.
-  let mediaPayload: any = {};
-  if (link) {
-    mediaPayload = { link };
-  } else if (id) {
-    // Only use ID if link is missing, and convert to integer if possible
-    const numericId = parseInt(id, 10);
-    mediaPayload = { id: isNaN(numericId) ? id : numericId };
-  }
+  // Properly constructed media payload ensures NO 'id' is sent if a 'link' exists.
+  const mediaPayload: any = link ? { link } : { id };
 
   return {
     type: 'header',
@@ -65,30 +71,6 @@ function buildHeaderComponent(
           : { type: 'document', document: mediaPayload },
     ],
   };
-}
-const link = params.headerMediaUrl ?? template.header_media_url;
-const id = params.headerMediaId ?? template.header_handle;
-if (!link && !id) {
-  throw new Error(
-    `${headerType} header requires a media link or id at send time — set header_media_url on the template or pass headerMediaUrl/headerMediaId.`,
-  );
-}
-
-// FIX: Meta has strictified 'id' type checking to pure integers. 
-// By flipping this rule to prioritize 'link' over 'id', we bypass the schema error 
-// entirely and securely pass standard image URLs to WhatsApp.
-const mediaPayload: any = link ? { link } : { id };
-
-return {
-  type: 'header',
-  parameters: [
-    headerType === 'image'
-      ? { type: 'image', image: mediaPayload }
-      : headerType === 'video'
-        ? { type: 'video', video: mediaPayload }
-        : { type: 'document', document: mediaPayload },
-  ],
-};
 }
 
 function buildBodyComponent(
@@ -122,6 +104,8 @@ function buttonNeedsSendParam(
     case 'QUICK_REPLY':
     case 'PHONE_NUMBER':
       return override !== undefined;
+    default:
+      return false;
   }
 }
 
@@ -136,7 +120,7 @@ function buildButtonComponent(
     case 'URL': {
       if (!override || !override.trim()) {
         throw new Error(
-          `URL button #${index + 1} uses {{1}} — requires a buttonParams[${index}] value.`,
+          `URL button #${index + 1} requires a value.`,
         );
       }
       return {
@@ -147,7 +131,7 @@ function buildButtonComponent(
       };
     }
     case 'COPY_CODE': {
-      const code = override?.trim() || button.example;
+      const code = override?.trim() || button.example || 'CODE';
       return {
         type: 'button',
         sub_type: 'copy_code',
@@ -160,10 +144,10 @@ function buildButtonComponent(
         type: 'button',
         sub_type: 'quick_reply',
         index: String(index),
-        parameters: [{ type: 'payload', payload: override! }],
+        parameters: [{ type: 'payload', payload: override || 'PAYLOAD' }],
       };
     }
-    case 'PHONE_NUMBER':
+    default:
       return null;
   }
 }
