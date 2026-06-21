@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
-import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
+// THE FIX: We import the builder directly and bypass the old 'sendTemplateMessage' black box!
+import { buildSendComponents, type SendTimeParams } from '@/lib/whatsapp/template-send-builder'
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard'
 import {
   sanitizePhoneForMeta,
@@ -61,7 +61,6 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-
     const {
       recipients: newRecipients,
       phone_numbers,
@@ -78,28 +77,20 @@ export async function POST(request: Request) {
     if (Array.isArray(newRecipients) && newRecipients.length > 0) {
       recipients = newRecipients
     } else if (Array.isArray(phone_numbers) && phone_numbers.length > 0) {
-      const shared: string[] = Array.isArray(template_params)
-        ? template_params
-        : []
+      const shared: string[] = Array.isArray(template_params) ? template_params : []
       recipients = phone_numbers.map((phone: string) => ({
         phone,
         params: shared,
       }))
     } else {
       return NextResponse.json(
-        {
-          error:
-            'Provide either `recipients` (preferred) or `phone_numbers` — must be a non-empty array',
-        },
+        { error: 'Provide either `recipients` (preferred) or `phone_numbers` — must be a non-empty array' },
         { status: 400 }
       )
     }
 
     if (!template_name) {
-      return NextResponse.json(
-        { error: 'template_name is required' },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: 'template_name is required' }, { status: 400 })
     }
 
     const { data: config, error: configError } = await supabase
@@ -110,10 +101,7 @@ export async function POST(request: Request) {
 
     if (configError || !config) {
       return NextResponse.json(
-        {
-          error:
-            'WhatsApp not configured. Please set up your WhatsApp integration first.',
-        },
+        { error: 'WhatsApp not configured. Please set up your WhatsApp integration first.' },
         { status: 400 }
       )
     }
@@ -130,25 +118,22 @@ export async function POST(request: Request) {
 
     if (rawTemplateRow && !isMessageTemplate(rawTemplateRow)) {
       return NextResponse.json(
-        {
-          error:
-            'Template row is malformed locally — run "Sync from Meta" in Settings to repair it before broadcasting.',
-        },
+        { error: 'Template row is malformed locally — run "Sync from Meta" in Settings to repair it before broadcasting.' },
         { status: 500 },
       )
     }
     const templateRow = rawTemplateRow ?? null
 
-    // 🔥 THE SKELETON KEY FIX 🔥
-    // Because the black-box `sendTemplateMessage` function is likely dropping our parameters,
-    // we bypass it entirely by mutating the template object before it gets there.
-    if (templateRow) {
-      if (finalMediaUrlToPass) {
-        // Force the URL directly into the template schema
-        templateRow.header_media_url = finalMediaUrlToPass;
+    if (!templateRow) {
+      return NextResponse.json({ error: 'Template not found in database.' }, { status: 404 })
+    }
+
+    // 🔥 ENFORCER: Force the template into an 'image' state if a URL is provided
+    if (finalMediaUrlToPass) {
+      if (!templateRow.header_type || templateRow.header_type === 'none' || templateRow.header_type === 'text') {
+        templateRow.header_type = 'image';
       }
-      // Physically annihilate the cursed Draft ID so the builder CANNOT fall back to it
-      templateRow.header_handle = '';
+      templateRow.header_handle = ''; // Kill the draft ID completely
     }
 
     const results: BroadcastResult[] = []
@@ -159,11 +144,7 @@ export async function POST(request: Request) {
       const sanitized = sanitizePhoneForMeta(recipient.phone)
 
       if (!isValidE164(sanitized)) {
-        results.push({
-          phone: recipient.phone,
-          status: 'failed',
-          error: 'Invalid phone number format',
-        })
+        results.push({ phone: recipient.phone, status: 'failed', error: 'Invalid phone number format' })
         failedCount++
         continue
       }
@@ -174,25 +155,56 @@ export async function POST(request: Request) {
 
       for (const variant of variants) {
         try {
-          const result = await sendTemplateMessage({
-            phoneNumberId: config.phone_number_id,
-            accessToken,
+          // 🔥 THE EMPTY STRING SANITIZER 🔥
+          // Meta crashes with #100 if any variable is an empty string. We replace "" with a blank space " ".
+          const safeParams = (recipient.params ?? []).map(p => {
+            return (p && String(p).trim() !== '') ? String(p) : ' ';
+          });
+
+          // Build the strict Meta components array
+          const components = buildSendComponents(templateRow, {
+            ...(recipient.messageParams || {}),
+            headerMediaUrl: finalMediaUrlToPass,
+            body: safeParams
+          });
+
+          // Build the direct Meta API payload
+          const metaPayload = {
+            messaging_product: 'whatsapp',
+            recipient_type: 'individual',
             to: variant,
-            templateName: template_name,
-            language: template_language || 'en_US',
-            template: templateRow ?? undefined, // Passing the mutated, foolproof template
-            messageParams: {
-              ...(recipient.messageParams || {}),
-              ...(finalMediaUrlToPass ? { headerMediaUrl: finalMediaUrlToPass } : {})
+            type: 'template',
+            template: {
+              name: template_name,
+              language: { code: template_language || 'en_US' },
+              components: components
+            }
+          };
+
+          // 🔥 DIRECT API CALL (Bypassing the old black box) 🔥
+          const response = await fetch(`https://graph.facebook.com/v19.0/${config.phone_number_id}/messages`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
             },
-            params: recipient.params ?? [],
-          })
-          sentMessageId = result.messageId
-          lastError = null
-          break
+            body: JSON.stringify(metaPayload)
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            // Enhanced Error Logging: If Meta complains, we grab the EXACT detail so it doesn't just say #100
+            const errorMessage = data.error?.message || 'Meta API Error';
+            const errorDetails = data.error?.error_data?.details || '';
+            throw new Error(`${errorMessage}. ${errorDetails}`);
+          }
+
+          sentMessageId = data.messages?.[0]?.id || 'sent_successfully';
+          lastError = null;
+          break;
         } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : 'Unknown error'
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error'
           if (!isRecipientNotAllowedError(errorMessage)) {
             lastError = errorMessage
             break
@@ -202,22 +214,11 @@ export async function POST(request: Request) {
       }
 
       if (sentMessageId) {
-        results.push({
-          phone: recipient.phone,
-          status: 'sent',
-          whatsapp_message_id: sentMessageId,
-        })
+        results.push({ phone: recipient.phone, status: 'sent', whatsapp_message_id: sentMessageId })
         sentCount++
       } else {
-        console.error(
-          `Failed to send broadcast to ${recipient.phone}:`,
-          lastError
-        )
-        results.push({
-          phone: recipient.phone,
-          status: 'failed',
-          error: lastError || 'Unknown error',
-        })
+        console.error(`Failed to send broadcast to ${recipient.phone}:`, lastError)
+        results.push({ phone: recipient.phone, status: 'failed', error: lastError || 'Unknown error' })
         failedCount++
       }
     }
@@ -231,9 +232,6 @@ export async function POST(request: Request) {
     })
   } catch (error) {
     console.error('Error in WhatsApp broadcast POST:', error)
-    return NextResponse.json(
-      { error: 'Failed to process broadcast' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Failed to process broadcast' }, { status: 500 })
   }
 }
