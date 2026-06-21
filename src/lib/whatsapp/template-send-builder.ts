@@ -19,11 +19,12 @@ export type MetaSendComponent =
     parameters: MetaSendParameter[];
   };
 
+// FIX 1: Allow TypeScript to accept number and null for 'id'
 type MetaSendParameter =
   | { type: 'text'; text: string }
-  | { type: 'image'; image: { link?: string; id?: string } }
-  | { type: 'video'; video: { link?: string; id?: string } }
-  | { type: 'document'; document: { link?: string; id?: string } }
+  | { type: 'image'; image: { link?: string; id?: string | number | null } }
+  | { type: 'video'; video: { link?: string; id?: string | number | null } }
+  | { type: 'document'; document: { link?: string; id?: string | number | null } }
   | { type: 'coupon_code'; coupon_code: string }
   | { type: 'payload'; payload: string };
 
@@ -54,19 +55,17 @@ function buildHeaderComponent(
     throw new Error(`${headerType} header requires a media link or id at send time.`);
   }
 
-  // FORCE CLEAN PAYLOAD
-  // By creating an object and deleting the 'id' if a 'link' exists, 
-  // we guarantee Meta sees NO 'id' field, satisfying the schema constraint.
-  const mediaPayload: any = {};
-  if (link) {
-    mediaPayload.link = link;
-  } else if (id) {
-    mediaPayload.id = id;
-  }
+  // FIX 2: Explicitly satisfy the '[integer, null]' Meta schema constraint
+  let mediaPayload: any = {};
 
-  // Explicitly ensure 'id' is removed if 'link' is provided
-  if (mediaPayload.link) {
-    delete mediaPayload.id;
+  if (link && typeof link === 'string' && link.trim() !== '') {
+    // If we have a link, force id to 'null'. Meta's schema will see 'null' 
+    // and let it pass validation perfectly.
+    mediaPayload = { link: link.trim(), id: null };
+  } else if (id) {
+    // If we only have an ID, we convert the string into a Number to satisfy the 'integer' constraint.
+    const numId = Number(id);
+    mediaPayload = { id: isNaN(numId) ? id : numId };
   }
 
   return {
@@ -80,8 +79,6 @@ function buildHeaderComponent(
     ],
   };
 }
-
-// ... (Keep the rest of the file exactly as it was) ...
 
 function buildBodyComponent(
   template: MessageTemplate,
