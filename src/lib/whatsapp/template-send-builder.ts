@@ -19,12 +19,12 @@ export type MetaSendComponent =
     parameters: MetaSendParameter[];
   };
 
-// FIX 1: Allow TypeScript to accept number and null for 'id'
+// FIX 1: Strictly define 'id' as number | null. No strings allowed.
 type MetaSendParameter =
   | { type: 'text'; text: string }
-  | { type: 'image'; image: { link?: string; id?: string | number | null } }
-  | { type: 'video'; video: { link?: string; id?: string | number | null } }
-  | { type: 'document'; document: { link?: string; id?: string | number | null } }
+  | { type: 'image'; image: { link?: string; id?: number | null } }
+  | { type: 'video'; video: { link?: string; id?: number | null } }
+  | { type: 'document'; document: { link?: string; id?: number | null } }
   | { type: 'coupon_code'; coupon_code: string }
   | { type: 'payload'; payload: string };
 
@@ -48,24 +48,26 @@ function buildHeaderComponent(
     };
   }
 
-  const link = params.headerMediaUrl ?? template.header_media_url;
-  const id = params.headerMediaId ?? template.header_handle;
+  let link = params.headerMediaUrl ?? template.header_media_url;
+  let id = params.headerMediaId ?? template.header_handle;
 
   if (!link && !id) {
     throw new Error(`${headerType} header requires a media link or id at send time.`);
   }
 
-  // FIX 2: Explicitly satisfy the '[integer, null]' Meta schema constraint
-  let mediaPayload: any = {};
+  let mediaPayload: any;
 
   if (link && typeof link === 'string' && link.trim() !== '') {
-    // If we have a link, force id to 'null'. Meta's schema will see 'null' 
-    // and let it pass validation perfectly.
-    mediaPayload = { link: link.trim(), id: null };
+    mediaPayload = { link: link.trim() };
   } else if (id) {
-    // If we only have an ID, we convert the string into a Number to satisfy the 'integer' constraint.
-    const numId = Number(id);
-    mediaPayload = { id: isNaN(numId) ? id : numId };
+    // FIX 2: If the database accidentally saved a URL inside the ID field, swap it to a link!
+    if (typeof id === 'string' && id.startsWith('http')) {
+      mediaPayload = { link: id.trim() };
+    } else {
+      // FIX 3: STRICT ENFORCEMENT. Meta expects an integer. We NEVER send a string here again.
+      const numId = parseInt(String(id).trim(), 10);
+      mediaPayload = { id: isNaN(numId) ? null : numId };
+    }
   }
 
   return {
