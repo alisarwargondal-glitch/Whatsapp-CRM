@@ -1,549 +1,235 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client';
-import { useAuth } from '@/hooks/use-auth';
-import { toast } from 'sonner';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
+import { useState, useRef } from 'react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Upload, FileText, Loader2, CheckCircle, XCircle, AlertTriangle, FolderPlus } from 'lucide-react';
-import type { CustomField } from '@/types';
+import { Loader2, UploadCloud, AlertCircle, CheckCircle2, FileText, AlertTriangle } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/hooks/use-auth';
+import { toast } from 'sonner';
 
-interface ImportModalProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onImported: () => void;
+interface ImportResult {
+  total: number;
+  success: number;
+  skipped: { phone: string; name: string; reason: string }[];
 }
 
-interface ParsedRow {
-  phone: string;
-  name?: string;
-  email?: string;
-  company?: string;
-  customFieldsMap?: Record<string, string>;
-}
-
-function parseFullCSV(text: string): string[][] {
-  const result: string[][] = [];
-  let row: string[] = [];
-  let currentField = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
-
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        currentField += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === ',' && !inQuotes) {
-      row.push(currentField.trim());
-      currentField = '';
-    } else if ((char === '\r' || char === '\n') && !inQuotes) {
-      if (char === '\r' && nextChar === '\n') {
-        i++;
-      }
-      row.push(currentField.trim());
-      if (row.length > 1 || row[0] !== '') {
-        result.push(row);
-      }
-      row = [];
-      currentField = '';
-    } else {
-      currentField += char;
-    }
-  }
-
-  if (currentField !== '' || row.length > 0) {
-    row.push(currentField.trim());
-    if (row.length > 1 || row[0] !== '') {
-      result.push(row);
-    }
-  }
-
-  return result;
-}
-
-function parseCSV(
-  text: string,
-  dynamicCustomFields: CustomField[],
-  onError: (msg: string) => void
-): ParsedRow[] | null {
-  const records = parseFullCSV(text);
-  if (records.length < 2) return [];
-
-  const headers = records[0].map((h) =>
-    h.toLowerCase().replace(/[^a-z0-9]/g, '')
-  );
-
-  const phoneIdx = headers.indexOf('phone');
-  if (phoneIdx === -1) {
-    onError('No valid rows found. Ensure CSV has a "phone" column header.');
-    return null;
-  }
-
-  const nameIdx = headers.indexOf('name');
-  const emailIdx = headers.indexOf('email');
-  const companyIdx = headers.indexOf('company');
-
-  const customFieldMappings: { id: string; index: number }[] = [];
-
-  for (const cf of dynamicCustomFields) {
-    const normalizedCrmName = cf.field_name.toLowerCase().replace(/[^a-z0-9]/g, '');
-    let fileIndex = headers.indexOf(normalizedCrmName);
-
-    if (fileIndex === -1 && normalizedCrmName.includes('unit')) fileIndex = headers.indexOf('unit');
-    if (fileIndex === -1 && (normalizedCrmName.includes('comment') || normalizedCrmName.includes('view') || normalizedCrmName.includes('remark'))) fileIndex = headers.indexOf('view');
-    if (fileIndex === -1 && normalizedCrmName.includes('cluster')) fileIndex = headers.indexOf('cluster');
-    if (fileIndex === -1 && normalizedCrmName.includes('bedroom')) fileIndex = headers.indexOf('bedrooms');
-
-    if (fileIndex !== -1) {
-      customFieldMappings.push({ id: cf.id, index: fileIndex });
-    }
-  }
-
-  const rows: ParsedRow[] = [];
-  for (let i = 1; i < records.length; i++) {
-    const values = records[i];
-    if (values.length === 0 || values.length <= phoneIdx) continue;
-
-    const phone = values[phoneIdx].trim().replace(/[\s\t\r\n]/g, '');
-    if (!phone) continue;
-
-    const customFieldsMap: Record<string, string> = {};
-    customFieldMappings.forEach((m) => {
-      const val = values[m.index];
-      if (val && val !== '-') {
-        customFieldsMap[m.id] = val.trim();
-      }
-    });
-
-    rows.push({
-      phone,
-      name: nameIdx >= 0 ? values[nameIdx]?.trim() || undefined : undefined,
-      email: emailIdx >= 0 ? values[emailIdx]?.trim() || undefined : undefined,
-      company: companyIdx >= 0 ? values[companyIdx]?.trim() || undefined : undefined,
-      customFieldsMap,
-    });
-  }
-
-  return rows;
-}
-
-export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps) {
+export function ImportModal({ open, onOpenChange, onImported }: { open: boolean, onOpenChange: (o: boolean) => void, onImported: () => void }) {
   const supabase = createClient();
   const { accountId } = useAuth();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [dbCustomFields, setDbCustomFields] = useState<CustomField[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [folderName, setFolderName] = useState('');
-  const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
-  const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<{
-    imported: number;
-    skipped: number;
-    failed: number;
-  } | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [results, setResults] = useState<ImportResult | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    (async () => {
-      const { data } = await supabase.from('custom_fields').select('*').order('field_name');
-      setDbCustomFields(data || []);
-    })();
-  }, [open, supabase]);
-
-  function reset() {
+  const resetState = () => {
     setFile(null);
     setFolderName('');
-    setParsedRows([]);
-    setResult(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  }
+    setResults(null);
+    setIsProcessing(false);
+  };
 
-  function handleOpenChange(open: boolean) {
-    if (!open) reset();
-    onOpenChange(open);
-  }
-
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const selected = e.target.files?.[0];
-    if (!selected) return;
-
-    setFile(selected);
-    setResult(null);
-
-    const fallbackName = selected.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
-    setFolderName(fallbackName);
-
-    const text = await selected.text();
-    const rows = parseCSV(text, dbCustomFields, (errorMessage) => {
-      toast.error(errorMessage);
-      setFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    });
-
-    if (rows === null) {
-      setParsedRows([]);
-      return;
+  const handleClose = () => {
+    if (results && results.success > 0) {
+      onImported(); // Triggers the page reload only AFTER you click close!
     }
-    setParsedRows(rows);
-  }
+    resetState();
+    onOpenChange(false);
+  };
 
-  async function insertContactCustomFields(contactId: string, customMap?: Record<string, string>) {
-    if (!customMap || Object.keys(customMap).length === 0) return;
-
-    const childRows = Object.entries(customMap).map(([fieldId, value]) => ({
-      contact_id: contactId,
-      custom_field_id: fieldId,
-      value: value,
-    }));
-
-    await supabase.from('contact_custom_values').insert(childRows);
-  }
-
-  async function handleImport() {
-    if (parsedRows.length === 0 || !accountId) return;
-    if (!folderName.trim()) {
-      toast.error('Please assign an Import Folder Name to group these contacts.');
-      return;
+  const processCSV = async () => {
+    if (!file || !folderName.trim()) {
+      return toast.error("Please provide both a file and a folder name.");
     }
-    setImporting(true);
+    setIsProcessing(true);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const user = session?.user;
-      if (!user) throw new Error('Not authenticated');
+      const text = await file.text();
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      if (lines.length < 2) throw new Error("CSV appears to be empty or missing headers.");
 
-      let targetFolderId = '';
-      const cleanFolderName = folderName.trim();
+      // Parse headers
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+      const phoneIdx = headers.findIndex(h => h.includes('phone') || h.includes('number'));
+      const nameIdx = headers.findIndex(h => h.includes('name'));
+      const emailIdx = headers.findIndex(h => h.includes('email'));
+      const companyIdx = headers.findIndex(h => h.includes('company'));
 
-      // 1. Manage the new Folders Architecture (Instead of Tags)
-      const { data: existingFolders } = await supabase
-        .from('folders')
-        .select('id')
-        .eq('account_id', accountId)
-        .ilike('name', cleanFolderName);
+      if (phoneIdx === -1) throw new Error("Could not find a 'phone' column in your CSV.");
 
-      if (existingFolders && existingFolders.length > 0) {
-        targetFolderId = existingFolders[0].id;
-      } else {
-        const colors = ['#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981'];
-        const randomColor = colors[Math.floor(Math.random() * colors.length)];
+      // Map rows
+      const parsedContacts = lines.slice(1).map(line => {
+        // Handle basic CSV splitting
+        const cols = line.split(',').map(c => c.trim());
+        return {
+          phone: cols[phoneIdx]?.replace(/\D/g, '') || '',
+          name: nameIdx !== -1 ? cols[nameIdx] : '',
+          email: emailIdx !== -1 ? cols[emailIdx] : '',
+          company: companyIdx !== -1 ? cols[companyIdx] : ''
+        };
+      }).filter(c => c.phone !== '');
 
+      // 1. Fetch existing phones from DB to check for duplicates
+      const { data: existingData } = await supabase
+        .from('contacts')
+        .select('phone')
+        .eq('account_id', accountId);
+
+      const existingPhones = new Set(existingData?.map(c => c.phone) || []);
+      const toInsert = [];
+      const skipped = [];
+
+      for (const c of parsedContacts) {
+        if (existingPhones.has(c.phone)) {
+          skipped.push({ phone: c.phone, name: c.name, reason: "Phone number already exists in CRM" });
+        } else {
+          toInsert.push(c);
+          existingPhones.add(c.phone); // Prevent duplicates within the CSV itself
+        }
+      }
+
+      // 2. Create the Folder
+      if (toInsert.length > 0) {
+        const { data: sessionData } = await supabase.auth.getSession();
         const { data: newFolder, error: folderErr } = await supabase
           .from('folders')
           .insert({
-            user_id: user.id,
+            user_id: sessionData.session?.user.id,
             account_id: accountId,
-            name: cleanFolderName,
-            color: randomColor
+            name: folderName.trim(),
+            color: '#3b82f6'
           })
           .select('id')
-          .maybeSingle();
+          .single();
 
-        if (folderErr) throw folderErr;
+        if (folderErr) throw new Error("Failed to create the folder.");
 
-        if (newFolder?.id) {
-          targetFolderId = newFolder.id;
-        } else {
-          const { data: verifiedFolders } = await supabase
-            .from('folders')
-            .select('id')
-            .eq('account_id', accountId)
-            .ilike('name', cleanFolderName);
+        // 3. Insert new contacts
+        const dbContacts = toInsert.map(c => ({
+          account_id: accountId,
+          folder_id: newFolder.id,
+          phone: c.phone,
+          name: c.name || null,
+          email: c.email || null,
+          company: c.company || null
+        }));
 
-          if (!verifiedFolders || verifiedFolders.length === 0) {
-            throw new Error('Folder creation failed.');
-          }
-          targetFolderId = verifiedFolders[0].id;
-        }
+        const { error: insertErr } = await supabase.from('contacts').insert(dbContacts);
+        if (insertErr) throw new Error("Failed to insert contacts into database.");
       }
 
-      let imported = 0;
-      let skipped = 0;
-      let failed = 0;
-      let limitReachedOccurred = false;
-
-      // Inline Native Deduplication
-      const uniqueRows: ParsedRow[] = [];
-      const seenPhones = new Set<string>();
-      let inFileDupes = 0;
-
-      for (const row of parsedRows) {
-        if (!row.phone || typeof row.phone !== 'string') continue;
-        const normalized = row.phone.replace(/\D/g, '');
-        if (!normalized) continue;
-
-        if (seenPhones.has(normalized)) {
-          inFileDupes++;
-        } else {
-          seenPhones.add(normalized);
-          uniqueRows.push({ ...row, phone: normalized });
-        }
-      }
-      skipped += inFileDupes;
-
-      const { data: existingRows } = await supabase
-        .from('contacts')
-        .select('id, phone, phone_normalized')
-        .eq('account_id', accountId);
-
-      const existingPhoneMap = new Map<string, string>();
-      existingRows?.forEach(r => {
-        if (r.phone_normalized && typeof r.phone_normalized === 'string') {
-          existingPhoneMap.set(r.phone_normalized.replace(/\D/g, ''), r.id);
-        }
-        if (r.phone && typeof r.phone === 'string') {
-          existingPhoneMap.set(r.phone.replace(/\D/g, ''), r.id);
-        }
+      // 4. Move to Summary Screen
+      setResults({
+        total: parsedContacts.length,
+        success: toInsert.length,
+        skipped: skipped
       });
 
-      for (const row of uniqueRows) {
-        try {
-          const normalizedPhone = row.phone;
-          let contactId = existingPhoneMap.get(normalizedPhone);
-
-          if (contactId) {
-            // Existing Contact: Just move them into the new Folder!
-            skipped++;
-            await supabase
-              .from('contacts')
-              .update({ folder_id: targetFolderId })
-              .eq('id', contactId);
-
-          } else {
-            // New Contact Payload including the Folder Link
-            const contactPayload: Record<string, any> = {
-              user_id: user.id,
-              account_id: accountId,
-              folder_id: targetFolderId,
-              phone: row.phone,
-              name: row.name || null,
-              email: row.email || null,
-              company: row.company || null,
-            };
-
-            // Dynamic Schema Fallback Loop
-            let insertAttempt = await supabase.from('contacts').insert(contactPayload).select('id').maybeSingle();
-
-            if (insertAttempt.error && insertAttempt.error.code === '23502' && insertAttempt.error.message.includes('phone_normalized')) {
-              contactPayload.phone_normalized = normalizedPhone;
-              insertAttempt = await supabase.from('contacts').insert(contactPayload).select('id').maybeSingle();
-            } else if (insertAttempt.error && insertAttempt.error.message.includes('non-DEFAULT')) {
-              delete contactPayload.phone_normalized;
-              insertAttempt = await supabase.from('contacts').insert(contactPayload).select('id').maybeSingle();
-            }
-
-            const { data: newContact, error: contactErr } = insertAttempt;
-
-            if (contactErr) {
-              if (contactErr.code === '23505' || contactErr.message?.includes('unique')) {
-                skipped++;
-                continue;
-              }
-              if (contactErr.message?.includes('limit') || contactErr.code === 'P0001') {
-                limitReachedOccurred = true;
-                failed++;
-                continue;
-              }
-              failed++;
-              continue;
-            }
-
-            if (!contactErr && newContact?.id) {
-              imported++;
-              await insertContactCustomFields(newContact.id, row.customFieldsMap);
-            } else {
-              failed++;
-            }
-          }
-        } catch (innerErr) {
-          failed++;
-        }
-      }
-
-      setResult({ imported, skipped, failed });
-
-      if (limitReachedOccurred) {
-        toast.warning("Some contacts couldn't be added because your plan's account limit has been reached.");
-      }
-      if (imported > 0 || skipped > 0) {
-        toast.success(`Processing complete for folder: ${cleanFolderName}`);
-        onImported();
-      }
-    } catch (err: unknown) {
-      console.error("CRITICAL IMPORT ERROR DETECTED:", err);
-      let message = 'Unknown error';
-      if (err instanceof Error) {
-        message = err.message;
-      } else if (err && typeof err === 'object') {
-        message = JSON.stringify(err);
-      } else {
-        message = String(err);
-      }
-      toast.error(`Import Error Details: ${message}`, { duration: 15000 });
+    } catch (err: any) {
+      toast.error(err.message || "Failed to process CSV file");
     } finally {
-      setImporting(false);
+      setIsProcessing(false);
     }
-  }
-
-  const preview = parsedRows.slice(0, 5);
+  };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 max-w-[95vw] sm:max-w-xl md:max-w-2xl overflow-hidden shadow-2xl">
+    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && handleClose()}>
+      <DialogContent className="bg-slate-900 border-slate-700 text-white sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-white flex items-center gap-2">
-            <FolderPlus className="size-5 text-primary" /> Import Contacts into Folder
-          </DialogTitle>
-          <DialogDescription className="text-slate-400">
-            Upload a spreadsheet file. Contacts will be cleanly organized directly into your selected visual directory folder.
-          </DialogDescription>
+          <DialogTitle>{results ? "Import Complete" : "Import Contacts"}</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-4 max-w-full overflow-hidden">
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-700 p-6 cursor-pointer hover:border-primary/50 transition-colors bg-slate-950/20"
-          >
-            {file ? (
-              <>
-                <FileText className="size-8 text-primary" />
-                <p className="text-sm text-slate-300 truncate max-w-full px-2">{file.name}</p>
-                <p className="text-xs text-slate-500">
-                  {parsedRows.length} row{parsedRows.length !== 1 ? 's' : ''} detected
-                </p>
-              </>
-            ) : (
-              <>
-                <Upload className="size-8 text-slate-500" />
-                <p className="text-sm text-slate-400">Click to upload CSV file</p>
-                <p className="text-xs text-slate-500">CSV with &quot;phone&quot; column header required</p>
-              </>
+        {/* RESULTS SCREEN */}
+        {results ? (
+          <div className="space-y-6 py-4">
+            <div className="flex flex-col items-center justify-center text-center space-y-2 bg-slate-950/50 p-6 rounded-xl border border-slate-800">
+              <CheckCircle2 className="size-12 text-green-500 mb-2" />
+              <h2 className="text-2xl font-bold text-white">{results.success} Imported</h2>
+              <p className="text-sm text-slate-400">Out of {results.total} total rows processed</p>
+            </div>
+
+            {results.skipped.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center text-yellow-500 font-medium text-sm">
+                  <AlertTriangle className="size-4 mr-2" />
+                  {results.skipped.length} Contacts Skipped (Duplicates)
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-[150px] overflow-y-auto scrollbar-thin space-y-2">
+                  {results.skipped.map((skip, idx) => (
+                    <div key={idx} className="flex justify-between items-center text-xs border-b border-slate-800/50 pb-2 last:border-0 last:pb-0">
+                      <div>
+                        <span className="font-semibold text-slate-300">{skip.name || 'Unknown'}</span>
+                        <span className="text-slate-500 ml-2 block sm:inline">{skip.phone}</span>
+                      </div>
+                      <span className="text-yellow-600/70">{skip.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
+
+            <Button onClick={handleClose} className="w-full bg-primary hover:bg-primary/90 text-white">
+              Finish & Refresh
+            </Button>
           </div>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            onChange={handleFileChange}
-            className="hidden"
-          />
-
-          {file && !result && (
-            <div className="space-y-1.5 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-              <Label htmlFor="folder" className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                Destination Folder Name
-              </Label>
+        ) : (
+          /* UPLOAD SCREEN */
+          <div className="space-y-6 py-4">
+            <div className="space-y-2">
+              <Label className="text-slate-300">Folder Name</Label>
               <Input
-                id="folder"
+                placeholder="e.g. Q3 Summer Leads"
                 value={folderName}
-                onChange={(e) => setFolderName(e.target.value)}
-                placeholder="e.g., Santorini Townhouses June"
-                className="border-slate-700 bg-slate-900 text-white focus:border-primary focus:ring-1 focus:ring-primary"
+                onChange={e => setFolderName(e.target.value)}
+                className="bg-slate-950 border-slate-700 text-white focus:border-primary"
+                disabled={isProcessing}
               />
             </div>
-          )}
 
-          {preview.length > 0 && !result && (
-            <div className="space-y-2 max-w-full">
-              <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                Preview (first {preview.length} rows)
-              </p>
-              <div className="rounded-lg border border-slate-700 w-full overflow-x-auto bg-slate-950/50 scrollbar-thin">
-                <table className="w-full text-xs min-w-[600px] table-fixed">
-                  <thead>
-                    <tr className="bg-slate-800 border-b border-slate-700">
-                      <th className="px-3 py-2 text-left text-slate-400 font-medium w-[130px]">Phone</th>
-                      <th className="px-3 py-2 text-left text-slate-400 font-medium w-[120px]">Name</th>
-                      <th className="px-3 py-2 text-left text-slate-400 font-medium w-[140px]">Email</th>
-                      {dbCustomFields.map((cf) => (
-                        <th key={cf.id} className="px-3 py-2 text-left text-amber-400 font-medium uppercase w-[120px] truncate">
-                          {cf.field_name}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.map((row, i) => (
-                      <tr key={i} className="border-t border-slate-800 hover:bg-slate-900/30">
-                        <td className="px-3 py-2 text-slate-300 font-mono truncate">{row.phone}</td>
-                        <td className="px-3 py-2 text-slate-300 truncate">{row.name || '-'}</td>
-                        <td className="px-3 py-2 text-slate-300 truncate">{row.email || '-'}</td>
-                        {dbCustomFields.map((cf) => (
-                          <td key={cf.id} className="px-3 py-2 text-slate-400 font-mono truncate max-w-[150px]">
-                            {row.customFieldsMap?.[cf.id] || '-'}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {result && (
-            <div className="rounded-lg border border-slate-700 p-4 space-y-2 bg-slate-950/30">
-              <p className="text-sm font-medium text-white">Import Complete</p>
-              <div className="flex flex-wrap items-center gap-4">
-                {result.imported > 0 && (
-                  <div className="flex items-center gap-1.5 text-primary text-sm">
-                    <CheckCircle className="size-4" /> {result.imported} new contacts imported
+            <div className="space-y-2">
+              <Label className="text-slate-300">CSV File</Label>
+              <div
+                onClick={() => !isProcessing && fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${file ? 'border-primary bg-primary/5' : 'border-slate-700 hover:border-slate-500 bg-slate-950'}`}
+              >
+                <input
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  ref={fileInputRef}
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  disabled={isProcessing}
+                />
+                {file ? (
+                  <div className="flex flex-col items-center text-primary">
+                    <FileText className="size-8 mb-2" />
+                    <span className="font-medium text-sm">{file.name}</span>
+                    <span className="text-xs text-slate-400 mt-1">{(file.size / 1024).toFixed(1)} KB</span>
                   </div>
-                )}
-                {result.skipped > 0 && (
-                  <div className="flex items-center gap-1.5 text-amber-400 text-sm">
-                    <AlertTriangle className="size-4" /> {result.skipped} existing contacts mapped to folder
-                  </div>
-                )}
-                {result.failed > 0 && (
-                  <div className="flex items-center gap-1.5 text-red-400 text-sm">
-                    <XCircle className="size-4" /> {result.failed} records failed
+                ) : (
+                  <div className="flex flex-col items-center text-slate-500">
+                    <UploadCloud className="size-8 mb-2 opacity-80" />
+                    <span className="font-medium text-sm text-slate-300">Click to upload CSV</span>
+                    <span className="text-xs mt-1">Must include 'phone' column</span>
                   </div>
                 )}
               </div>
             </div>
-          )}
-        </div>
 
-        <DialogFooter className="bg-slate-900 border-t border-slate-800/60 pt-3">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => handleOpenChange(false)}
-            className="border-slate-700 text-slate-300 hover:bg-slate-800"
-          >
-            {result ? 'Close' : 'Cancel'}
-          </Button>
-          {!result && (
-            <Button
-              type="button"
-              disabled={parsedRows.length === 0 || importing || !folderName.trim()}
-              onClick={handleImport}
-              className="bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-40"
-            >
-              {importing && <Loader2 className="size-4 animate-spin" />}
-              Process Group Import
-            </Button>
-          )}
-        </DialogFooter>
+            <DialogFooter className="pt-2">
+              <Button variant="outline" onClick={handleClose} disabled={isProcessing} className="border-slate-700 text-slate-300 hover:bg-slate-800">
+                Cancel
+              </Button>
+              <Button onClick={processCSV} disabled={!file || !folderName.trim() || isProcessing} className="bg-primary hover:bg-primary/90 text-white min-w-[120px]">
+                {isProcessing ? <Loader2 className="size-4 animate-spin" /> : 'Process Import'}
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );
