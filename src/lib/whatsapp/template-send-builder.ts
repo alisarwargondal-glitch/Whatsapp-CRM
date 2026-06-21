@@ -39,9 +39,7 @@ function buildHeaderComponent(
     if (varCount === 0) return null;
     const value = params.headerText;
     if (!value || !value.trim()) {
-      throw new Error(
-        'Header text variable {{1}} requires a value — pass headerText.',
-      );
+      throw new Error('Header text variable {{1}} requires a value — pass headerText.');
     }
     return {
       type: 'header',
@@ -53,13 +51,18 @@ function buildHeaderComponent(
   const id = params.headerMediaId ?? template.header_handle;
 
   if (!link && !id) {
-    throw new Error(
-      `${headerType} header requires a media link or id at send time.`,
-    );
+    throw new Error(`${headerType} header requires a media link or id at send time.`);
   }
 
-  // Properly constructed media payload ensures NO 'id' is sent if a 'link' exists.
-  const mediaPayload: any = link ? { link } : { id };
+  // Create the media payload dynamically. 
+  // By only defining 'link' if a link exists, we ensure 'id' is absent,
+  // preventing the JSON schema 'type' integer validation error.
+  const mediaPayload: { link?: string; id?: string } = {};
+  if (link) {
+    mediaPayload.link = link;
+  } else if (id) {
+    mediaPayload.id = id;
+  }
 
   return {
     type: 'header',
@@ -81,9 +84,7 @@ function buildBodyComponent(
   const body = params.body ?? [];
   if (varCount === 0 && body.length === 0) return null;
   if (body.length < varCount) {
-    throw new Error(
-      `Body has ${varCount} variable(s) but only ${body.length} value(s) were supplied.`,
-    );
+    throw new Error(`Body has ${varCount} variable(s) but only ${body.length} value(s) were supplied.`);
   }
   const values = body.slice(0, varCount);
   return {
@@ -92,10 +93,7 @@ function buildBodyComponent(
   };
 }
 
-function buttonNeedsSendParam(
-  button: TemplateButton,
-  override: string | undefined,
-): boolean {
+function buttonNeedsSendParam(button: TemplateButton, override: string | undefined): boolean {
   switch (button.type) {
     case 'URL':
       return extractVariableIndices(button.url).length > 0;
@@ -117,36 +115,28 @@ function buildButtonComponent(
   if (!buttonNeedsSendParam(button, override)) return null;
 
   switch (button.type) {
-    case 'URL': {
-      if (!override || !override.trim()) {
-        throw new Error(
-          `URL button #${index + 1} requires a value.`,
-        );
-      }
+    case 'URL':
+      if (!override || !override.trim()) throw new Error(`URL button #${index + 1} requires a value.`);
       return {
         type: 'button',
         sub_type: 'url',
         index: String(index),
         parameters: [{ type: 'text', text: override }],
       };
-    }
-    case 'COPY_CODE': {
-      const code = override?.trim() || button.example || 'CODE';
+    case 'COPY_CODE':
       return {
         type: 'button',
         sub_type: 'copy_code',
         index: String(index),
-        parameters: [{ type: 'coupon_code', coupon_code: code }],
+        parameters: [{ type: 'coupon_code', coupon_code: override?.trim() || button.example || 'CODE' }],
       };
-    }
-    case 'QUICK_REPLY': {
+    case 'QUICK_REPLY':
       return {
         type: 'button',
         sub_type: 'quick_reply',
         index: String(index),
         parameters: [{ type: 'payload', payload: override || 'PAYLOAD' }],
       };
-    }
     default:
       return null;
   }
