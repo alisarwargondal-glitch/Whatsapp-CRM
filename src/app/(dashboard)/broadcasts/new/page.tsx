@@ -52,11 +52,17 @@ export default function NewBroadcastPage() {
     if (!template) return;
 
     try {
+      // THE FIX IS HERE: We explicitly extract the Supabase URL you uploaded 
+      // and inject it into the template as the header_media_url.
+      const uploadedMediaUrl = variables['headerMediaUrl']?.value;
+
       const broadcastId = await createAndSendBroadcast({
         name,
         template: {
           ...template,
-          body_text: template.text_variations?.[selectedVariationIdx] || template.body_text
+          body_text: template.text_variations?.[selectedVariationIdx] || template.body_text,
+          // By injecting the URL here, the backend naturally picks it up and sends the "link" to Meta!
+          header_media_url: uploadedMediaUrl || template.header_media_url
         },
         audience: {
           type: audience.type,
