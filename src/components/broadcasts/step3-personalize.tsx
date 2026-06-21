@@ -13,7 +13,7 @@ interface CustomField {
 }
 
 interface Step3Props {
-  template: any; // The selected template object
+  template: any;
   variables: Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>;
   onUpdate: (vars: Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>) => void;
   onNext: () => void;
@@ -36,7 +36,7 @@ export function Step3Personalize({
   const [loading, setLoading] = useState(true);
   const [detectedVars, setDetectedVars] = useState<string[]>([]);
 
-  // 1. Fetch Custom Fields from Database
+  // 1. Fetch Custom Fields
   useEffect(() => {
     async function fetchFields() {
       const { data, error } = await supabase.from('custom_fields').select('id, field_name').order('field_name');
@@ -48,26 +48,25 @@ export function Step3Personalize({
     fetchFields();
   }, [supabase]);
 
-  // 2. Parse Template Text to extract {{1}}, {{2}}, etc.
+  // 2. Parse Template Text to extract ANY variable like {{name}}, {{company}}, or {{1}}
   useEffect(() => {
     if (!template) return;
     const textToParse = (template.header_text || '') + ' ' + (template.body_text || '');
 
-    // Regex to find all numbers inside {{ }}
-    const regex = /\{\{(\d+)\}\}/g;
+    // FIX: Regex now captures ANY text inside {{ }}, not just digits!
+    const regex = /\{\{([^}]+)\}\}/g;
     const matches = Array.from(textToParse.matchAll(regex));
 
-    // Extract unique variable numbers and sort them
-    const uniqueVars = Array.from(new Set(matches.map(m => m[1]))).sort((a, b) => Number(a) - Number(b));
+    // Extract unique variable names and clean up any whitespace
+    const uniqueVars = Array.from(new Set(matches.map(m => m[1].trim())));
     setDetectedVars(uniqueVars);
 
-    // Initialize missing variables in state
     if (uniqueVars.length > 0) {
       const updatedVars = { ...variables };
       let hasChanges = false;
       uniqueVars.forEach(v => {
         if (!updatedVars[v]) {
-          updatedVars[v] = { type: 'field', value: 'name' }; // Default to 'name'
+          updatedVars[v] = { type: 'field', value: 'name' }; // Default to standard field 'name'
           hasChanges = true;
         }
       });
@@ -77,27 +76,26 @@ export function Step3Personalize({
     }
   }, [template, variables, onUpdate]);
 
-  const handleTypeChange = (varNum: string, newType: 'static' | 'field' | 'custom_field') => {
+  const handleTypeChange = (varName: string, newType: 'static' | 'field' | 'custom_field') => {
     onUpdate({
       ...variables,
-      [varNum]: {
+      [varName]: {
         type: newType,
         value: newType === 'static' ? '' : (newType === 'field' ? 'name' : (customFields[0]?.id || ''))
       }
     });
   };
 
-  const handleValueChange = (varNum: string, newValue: string) => {
+  const handleValueChange = (varName: string, newValue: string) => {
     onUpdate({
       ...variables,
-      [varNum]: { ...variables[varNum], value: newValue }
+      [varName]: { ...variables[varName], value: newValue }
     });
   };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
-      {/* Template Variations Selector (If applicable) */}
       {template.text_variations && template.text_variations.length > 1 && onVariationChange && (
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
           <Label className="text-slate-300 font-medium flex items-center gap-2">
@@ -115,7 +113,6 @@ export function Step3Personalize({
         </div>
       )}
 
-      {/* Preview Card */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
         <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Template Preview</h3>
         <div className="bg-slate-950/50 p-4 rounded-lg border border-slate-800/50 text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">
@@ -124,7 +121,6 @@ export function Step3Personalize({
         </div>
       </div>
 
-      {/* Variables Mapping Engine */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-5">
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
           <h3 className="text-lg font-bold text-white flex items-center gap-2">
@@ -140,25 +136,25 @@ export function Step3Personalize({
         ) : detectedVars.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-slate-500">
             <Info className="size-8 mb-2 opacity-50" />
-            <p className="text-sm">No variables like {'{{1}}'} found in this template.</p>
+            <p className="text-sm">No variables like {'{{1}}'} or {'{{name}}'} found in this template.</p>
           </div>
         ) : (
           <div className="space-y-4">
-            {detectedVars.map(varNum => {
-              const currentSetting = variables[varNum] || { type: 'field', value: 'name' };
+            {detectedVars.map(varName => {
+              const currentSetting = variables[varName] || { type: 'field', value: 'name' };
 
               return (
-                <div key={varNum} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start bg-slate-950/50 p-4 rounded-lg border border-slate-800/80">
-                  <div className="md:col-span-2 flex items-center h-10">
-                    <span className="bg-primary/20 text-primary font-bold px-3 py-1.5 rounded-md text-sm">
-                      {`{{${varNum}}}`}
+                <div key={varName} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start bg-slate-950/50 p-4 rounded-lg border border-slate-800/80">
+                  <div className="md:col-span-3 flex items-center h-10">
+                    <span className="bg-primary/20 text-primary font-bold px-3 py-1.5 rounded-md text-sm truncate max-w-full">
+                      {`{{${varName}}}`}
                     </span>
                   </div>
 
-                  <div className="md:col-span-4">
+                  <div className="md:col-span-3">
                     <select
                       value={currentSetting.type}
-                      onChange={(e) => handleTypeChange(varNum, e.target.value as any)}
+                      onChange={(e) => handleTypeChange(varName, e.target.value as any)}
                       className="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-md p-2.5 text-sm focus:ring-1 focus:ring-primary outline-none"
                     >
                       <optgroup label="CRM Data">
@@ -176,7 +172,7 @@ export function Step3Personalize({
                       <Input
                         placeholder="Enter text to replace this variable..."
                         value={currentSetting.value}
-                        onChange={(e) => handleValueChange(varNum, e.target.value)}
+                        onChange={(e) => handleValueChange(varName, e.target.value)}
                         className="bg-slate-900 border-slate-700 text-white"
                       />
                     )}
@@ -184,7 +180,7 @@ export function Step3Personalize({
                     {currentSetting.type === 'field' && (
                       <select
                         value={currentSetting.value}
-                        onChange={(e) => handleValueChange(varNum, e.target.value)}
+                        onChange={(e) => handleValueChange(varName, e.target.value)}
                         className="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-md p-2.5 text-sm focus:ring-1 focus:ring-primary outline-none"
                       >
                         <option value="name">Contact Name</option>
@@ -197,7 +193,7 @@ export function Step3Personalize({
                     {currentSetting.type === 'custom_field' && (
                       <select
                         value={currentSetting.value}
-                        onChange={(e) => handleValueChange(varNum, e.target.value)}
+                        onChange={(e) => handleValueChange(varName, e.target.value)}
                         className="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-md p-2.5 text-sm focus:ring-1 focus:ring-primary outline-none"
                       >
                         {customFields.map(cf => (
@@ -213,7 +209,6 @@ export function Step3Personalize({
         )}
       </div>
 
-      {/* Navigation Controls */}
       <div className="flex justify-between pt-4 border-t border-slate-800">
         <Button variant="outline" onClick={onBack} className="border-slate-700 text-slate-300 hover:bg-slate-800">
           <ArrowLeft className="mr-2 size-4" /> Back
