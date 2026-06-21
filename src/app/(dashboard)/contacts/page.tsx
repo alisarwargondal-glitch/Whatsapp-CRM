@@ -217,14 +217,24 @@ export default function ContactsDirectory() {
 
     setIsAddingContact(true);
 
+    // FETCH THE ACTUAL AUTHENTICATED USER ID
+    const { data: authData } = await supabase.auth.getUser();
+    const actualUserId = authData?.user?.id;
+
+    if (!actualUserId) {
+      setIsAddingContact(false);
+      return toast.error("Could not verify your user session. Please refresh.");
+    }
+
+    // Use the actual user's ID for user_id, and accountId for account_id
     const { data: insertedContact, error: contactError } = await supabase.from('contacts').insert([{
       name: newContact.name,
       phone: newContact.phone,
       email: newContact.email,
       company: newContact.company,
       folder_id: newContact.folder_id,
-      user_id: accountId,
-      account_id: accountId
+      user_id: actualUserId,     // FIX IS HERE
+      account_id: accountId      // Kept intact for multi-tenant safety
     }]).select().single();
 
     if (contactError) {
