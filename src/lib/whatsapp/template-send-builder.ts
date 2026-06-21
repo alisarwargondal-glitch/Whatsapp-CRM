@@ -19,8 +19,9 @@ export type MetaSendComponent =
     parameters: MetaSendParameter[];
   };
 
+// 🔥 THE FIX: Added 'parameter_name' to the strict TypeScript schema
 type MetaSendParameter =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; parameter_name?: string }
   | { type: 'image'; image: { link?: string; id?: number } }
   | { type: 'video'; video: { link?: string; id?: number } }
   | { type: 'document'; document: { link?: string; id?: number } }
@@ -33,19 +34,33 @@ function buildHeaderComponent(
 ): MetaSendComponent | null {
   if (!template.header_type || template.header_type === 'none') return null;
 
-  // 🔥 THE FIX: Force the DB string to lowercase so "IMAGE" safely triggers the image logic!
   const headerType = template.header_type.toLowerCase();
 
   if (headerType === 'text') {
-    const varCount = extractVariableIndices(template.header_content ?? '').length;
-    if (varCount === 0) return null;
+    const regex = /\{\{([^}]+)\}\}/g;
+    const matches = Array.from((template.header_content || '').matchAll(regex));
+    const uniqueVars = Array.from(new Set(matches.map(m => m[1].trim())));
+
+    if (uniqueVars.length === 0) return null;
+
     const value = params.headerText;
     if (!value || !value.trim()) {
-      throw new Error('Header text variable {{1}} requires a value — pass headerText.');
+      throw new Error('Header text variable requires a value — pass headerText.');
     }
+
+    const paramName = uniqueVars[0];
+    const isNumeric = /^\d+$/.test(paramName);
+
+    const textParam: MetaSendParameter = { type: 'text', text: value };
+
+    // 🔥 If the header uses a named variable, pass the name!
+    if (!isNumeric) {
+      textParam.parameter_name = paramName;
+    }
+
     return {
       type: 'header',
-      parameters: [{ type: 'text', text: value }],
+      parameters: [textParam],
     };
   }
 
@@ -54,7 +69,6 @@ function buildHeaderComponent(
 
   let mediaPayload: any = null;
 
-  // Safely map the URL
   if (typeof link === 'string' && link.includes('http')) {
     mediaPayload = { link: link.trim() };
   }
@@ -72,7 +86,6 @@ function buildHeaderComponent(
   return {
     type: 'header',
     parameters: [
-      // Because we used .toLowerCase(), this will now properly trigger!
       headerType === 'image'
         ? { type: 'image', image: mediaPayload }
         : headerType === 'video'
@@ -86,16 +99,43 @@ function buildBodyComponent(
   template: MessageTemplate,
   params: SendTimeParams,
 ): MetaSendComponent | null {
-  const varCount = extractVariableIndices(template.body_text).length;
+  const bodyText = template.body_text || '';
+
+  // Extract all variables (e.g., {{name}}, {{1}}) directly from the text
+  const regex = /\{\{([^}]+)\}\}/g;
+  const matches = Array.from(bodyText.matchAll(regex));
+  const uniqueVars = Array.from(new Set(matches.map(m => m[1].trim())));
+
+  // Sort them so they perfectly match the order of the params coming from your backend
+  const sortedVars = uniqueVars.sort((a, b) => {
+    const an = Number(a);
+    const bn = Number(b);
+    if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
+    return a.localeCompare(b);
+  });
+
   const body = params.body ?? [];
-  if (varCount === 0 && body.length === 0) return null;
-  if (body.length < varCount) {
-    throw new Error(`Body has ${varCount} variable(s) but only ${body.length} value(s) were supplied.`);
-  }
-  const values = body.slice(0, varCount);
+  if (sortedVars.length === 0) return null;
+
+  const values = body.slice(0, sortedVars.length);
+
   return {
     type: 'body',
-    parameters: values.map((text) => ({ type: 'text', text: String(text) })),
+    parameters: values.map((textVal, i) => {
+      // Ensure we NEVER send a blank string to Meta, which also causes #100 crashes
+      const textStr = String(textVal).trim() === '' ? ' ' : String(textVal);
+      const paramName = sortedVars[i];
+
+      const result: MetaSendParameter = { type: 'text', text: textStr };
+
+      // 🔥 THE SKELETON KEY 🔥
+      // If the variable is named (e.g. {{name}} instead of {{1}}), Meta strictly demands parameter_name.
+      if (paramName && !/^\d+$/.test(paramName)) {
+        result.parameter_name = paramName;
+      }
+
+      return result;
+    }),
   };
 }
 
