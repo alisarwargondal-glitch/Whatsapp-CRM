@@ -19,12 +19,12 @@ export type MetaSendComponent =
     parameters: MetaSendParameter[];
   };
 
-// FIX 1: Strictly define 'id' as number | null. No strings allowed.
+// Strictly defined. No nulls allowed.
 type MetaSendParameter =
   | { type: 'text'; text: string }
-  | { type: 'image'; image: { link?: string; id?: number | null } }
-  | { type: 'video'; video: { link?: string; id?: number | null } }
-  | { type: 'document'; document: { link?: string; id?: number | null } }
+  | { type: 'image'; image: { link?: string; id?: number } }
+  | { type: 'video'; video: { link?: string; id?: number } }
+  | { type: 'document'; document: { link?: string; id?: number } }
   | { type: 'coupon_code'; coupon_code: string }
   | { type: 'payload'; payload: string };
 
@@ -48,26 +48,33 @@ function buildHeaderComponent(
     };
   }
 
-  let link = params.headerMediaUrl ?? template.header_media_url;
-  let id = params.headerMediaId ?? template.header_handle;
+  const link = params.headerMediaUrl ?? template.header_media_url;
+  const id = params.headerMediaId ?? template.header_handle;
 
   if (!link && !id) {
     throw new Error(`${headerType} header requires a media link or id at send time.`);
   }
 
-  let mediaPayload: any;
+  // Build the payload purely. No undefined or null keys will exist here.
+  let mediaPayload: any = {};
 
   if (link && typeof link === 'string' && link.trim() !== '') {
     mediaPayload = { link: link.trim() };
   } else if (id) {
-    // FIX 2: If the database accidentally saved a URL inside the ID field, swap it to a link!
     if (typeof id === 'string' && id.startsWith('http')) {
       mediaPayload = { link: id.trim() };
     } else {
-      // FIX 3: STRICT ENFORCEMENT. Meta expects an integer. We NEVER send a string here again.
       const numId = parseInt(String(id).trim(), 10);
-      mediaPayload = { id: isNaN(numId) ? null : numId };
+      if (!isNaN(numId)) {
+        mediaPayload = { id: numId };
+      }
     }
+  }
+
+  // FAILSAFE: If the data was garbage, catch it locally before sending to Meta.
+  if (!mediaPayload.link && !mediaPayload.id) {
+    console.error("CRITICAL MEDIA ERROR - Invalid Data Provided:", { link, id });
+    throw new Error("Could not construct a valid media payload. URL or ID is invalid. Check your terminal logs.");
   }
 
   return {
