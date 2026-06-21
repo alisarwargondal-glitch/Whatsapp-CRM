@@ -18,17 +18,9 @@ export interface AudienceConfig {
   tagIds?: string[];
   customField?: CustomFieldFilter;
   csvContacts?: { phone: string; name?: string }[];
-  /** Contacts carrying any of these tags are subtracted from the result. */
   excludeTagIds?: string[];
 }
 
-/**
- * Variable mapping — each template placeholder (by key, usually "1",
- * "2", …) is resolved at send time. `field` maps to a built-in contact
- * field (name/phone/email/company); `custom_field` maps to a
- * contact_custom_values.value row keyed by the custom_fields.id stored
- * in `value`.
- */
 export type VariableMapping =
   | { type: 'static'; value: string }
   | { type: 'field'; value: string }
@@ -47,15 +39,8 @@ interface UseBroadcastSendingReturn {
   progress: number;
 }
 
-/**
- * Meta rate-limit buffer. 10 per batch + 1 s pause matches the spec
- * and keeps us comfortably under Meta's per-phone-number messaging
- * rate so a large broadcast never trips the upstream limiter.
- */
 const SEND_BATCH_SIZE = 10;
 const SEND_BATCH_DELAY_MS = 1000;
-
-/** `broadcast_recipients` inserts are independent of the send rate. */
 const INSERT_BATCH_SIZE = 200;
 
 function sleep(ms: number) {
@@ -69,21 +54,13 @@ interface BroadcastApiResult {
   error?: string;
 }
 
-/** contactId → (customFieldId → value). */
 type CustomValueIndex = Map<string, Map<string, string>>;
 
-/**
- * Per-contact resolution of custom-field placeholders. Static and
- * built-in-field mappings resolve synchronously; custom fields read
- * from a pre-built index to avoid N+1 queries during the send loop.
- */
 export function resolveVariables(
   variables: Record<string, VariableMapping>,
   contact: Contact,
   customValues?: Map<string, string>,
 ): string[] {
-  // Keys are typically "1","2",... — numeric-aware sort keeps
-  // {{1}} before {{10}}.
   const keys = Object.keys(variables).sort((a, b) => {
     const an = Number(a);
     const bn = Number(b);
@@ -105,15 +82,10 @@ export function resolveVariables(
       return fieldMap[v.value] ?? '';
     }
 
-    // custom_field
     return customValues?.get(v.value) ?? '';
   });
 }
 
-/**
- * Bulk-fetch contact_custom_values for a set of contacts. Returns an
- * index keyed by contact_id → field_id → value.
- */
 async function fetchCustomValueIndex(
   supabase: ReturnType<typeof createClient>,
   contactIds: string[],
@@ -121,8 +93,6 @@ async function fetchCustomValueIndex(
   const index: CustomValueIndex = new Map();
   if (contactIds.length === 0) return index;
 
-  // Supabase PostgREST caps the .in(...) IN-clause roughly at 1000
-  // values. Page through to stay safe.
   const PAGE = 500;
   for (let i = 0; i < contactIds.length; i += PAGE) {
     const slice = contactIds.slice(i, i + PAGE);
@@ -184,8 +154,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       contacts = await upsertCsvContacts(supabase, audience.csvContacts);
     }
 
-    // Apply exclude tags (works across all contact-derived audience
-    // types). CSV contacts are synthetic so exclusion doesn't apply.
     if (audience.excludeTagIds && audience.excludeTagIds.length > 0) {
       const { data: excludeRows } = await supabase
         .from('contact_tags')
@@ -198,17 +166,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
     return contacts;
   }
 
-  /**
-   * CSV uploads arrive as raw phone/name pairs, not DB rows. Before we
-   * can insert broadcast_recipients (whose contact_id FKs contacts.id),
-   * we need real contacts.id UUIDs. So: look up each CSV phone in the
-   * caller's contacts table; insert any that don't exist; return the
-   * resolved set.
-   *
-   * Pre-existing implementation synthesized `csv-N` strings as
-   * contact_id, which failed the UUID cast on insert — every CSV
-   * broadcast silently created zero recipients.
-   */
   async function upsertCsvContacts(
     supabase: ReturnType<typeof createClient>,
     csvRows: { phone: string; name?: string }[],
@@ -226,14 +183,12 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       throw new Error('Your profile is not linked to an account.');
     }
 
-    // De-duplicate by phone within the CSV (users can paste duplicates).
     const uniqueByPhone = new Map<string, { phone: string; name?: string }>();
     for (const row of csvRows) {
       if (row.phone) uniqueByPhone.set(row.phone, row);
     }
     const phones = [...uniqueByPhone.keys()];
 
-    // Single round-trip lookup of existing contacts by phone.
     const { data: existing, error: lookupErr } = await supabase
       .from('contacts')
       .select('*')
@@ -248,8 +203,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       if (c.phone) byPhone.set(c.phone, c);
     }
 
-    // Insert only missing contacts, in one batch per 200 rows (PostgREST
-    // has a default payload cap — 200 keeps individual requests small).
     const missing = phones
       .filter((p) => !byPhone.has(p))
       .map((phone) => ({
@@ -274,7 +227,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       }
     }
 
-    // Preserve input order so analytics roughly matches the CSV order.
     return phones
       .map((p) => byPhone.get(p))
       .filter((c): c is Contact => Boolean(c));
@@ -286,9 +238,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
   ): Promise<Contact[]> {
     const { fieldId, operator, value } = filter;
 
-    // Build the WHERE clause for the operator. PostgREST supports
-    // eq/neq/ilike via the query builder — use ilike with wildcards
-    // for "contains" so the match is case-insensitive.
     let query = supabase
       .from('contact_custom_values')
       .select('contact_id')
@@ -320,11 +269,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
     const supabase = createClient();
 
     try {
-      // ── Step 0: Resolve current user ──────────────────────────────
-      // broadcasts.user_id is NOT NULL + guarded by RLS
-      // (auth.uid() = user_id). Without this, the INSERT below was
-      // silently failing with 23502 / 42501 — the wizard would
-      // no-op with no feedback.
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -336,7 +280,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         throw new Error('Your profile is not linked to an account.');
       }
 
-      // ── Step 1: Resolve audience contacts ─────────────────────────
       setProgress(5);
       const contacts = await resolveAudience(payload.audience);
 
@@ -344,7 +287,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         throw new Error('No contacts found for this audience.');
       }
 
-      // ── Step 2: Create broadcast row ──────────────────────────────
       setProgress(10);
       const { data: broadcast, error: broadcastError } = await supabase
         .from('broadcasts')
@@ -378,7 +320,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         );
       }
 
-      // ── Step 3: Insert recipient rows ─────────────────────────────
       setProgress(20);
       const recipientRows = contacts.map((contact) => ({
         broadcast_id: broadcast.id,
@@ -392,11 +333,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
           .from('broadcast_recipients')
           .insert(batch);
         if (recipientError) {
-          // Previous impl logged and marched on — the broadcast then ran
-          // with an incomplete recipient set, so webhook status updates
-          // couldn't find some rows and the aggregate counts drifted.
-          // Flip the broadcast to failed so the user sees the problem
-          // immediately, then throw to abort the send loop.
           await supabase
             .from('broadcasts')
             .update({
@@ -410,7 +346,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         }
       }
 
-      // ── Step 4: Fetch recipients (joined contact) + preload custom values
       setProgress(30);
       const { data: recipients, error: recipientsFetchError } = await supabase
         .from('broadcast_recipients')
@@ -421,8 +356,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         throw new Error('Failed to fetch broadcast recipients');
       }
 
-      // One bulk fetch of custom values for every contact in this
-      // broadcast, avoiding N+1 during the send loop.
       const contactIds = recipients
         .map((r) => r.contact?.id)
         .filter((id): id is string => Boolean(id));
@@ -434,6 +367,9 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       let failedCount = 0;
       const totalRecipients = recipients.length;
 
+      // Extract the uploaded URL directly from the variables dictionary or the wrapper override
+      const finalMediaUrl = payload.template.header_media_url || payload.variables['headerMediaUrl']?.value;
+
       for (let i = 0; i < recipients.length; i += SEND_BATCH_SIZE) {
         const batch = recipients.slice(i, i + SEND_BATCH_SIZE);
 
@@ -443,10 +379,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
             phone: r.contact!.phone as string,
             params: r.contact
               ? resolveVariables(
-                  payload.variables,
-                  r.contact,
-                  customValueIndex.get(r.contact.id),
-                )
+                payload.variables,
+                r.contact,
+                customValueIndex.get(r.contact.id),
+              )
               : [],
           }));
 
@@ -460,6 +396,9 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
               recipients: apiRecipients,
               template_name: payload.template.name,
               template_language: payload.template.language ?? 'en_US',
+              // THE BRIDGE FIX IS HERE! Pass the media URL explicitly to the backend
+              headerMediaUrl: finalMediaUrl,
+              header_media_url: finalMediaUrl // Passing both naming styles just in case your backend expects snake_case
             }),
           });
 
@@ -533,9 +472,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         }
       }
 
-      // ── Step 5: Finalize status ───────────────────────────────────
-      // Aggregate counts are maintained by the DB trigger (migration
-      // 003); we only flip the final status here.
       setProgress(95);
       const finalStatus = failedCount === totalRecipients ? 'failed' : 'sent';
       await supabase
