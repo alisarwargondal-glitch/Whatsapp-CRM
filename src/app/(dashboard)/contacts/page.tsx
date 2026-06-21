@@ -11,39 +11,18 @@ import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { ImportModal } from '@/components/contacts/import-modal';
 
-// --- STYLES ---
-const hideResizeHandleStyles = `
-  *::-webkit-resizer { display: none !important; }
-  textarea:focus, input:focus { outline: none !important; }
-`;
+const hideResizeHandleStyles = `*::-webkit-resizer { display: none !important; } textarea:focus, input:focus { outline: none !important; }`;
 
-// --- INLINE EDITING COMPONENTS ---
 function EditableInput({ initialValue, onSave }: { initialValue: string, onSave: (val: string) => void }) {
   const [val, setVal] = useState(initialValue);
   useEffect(() => setVal(initialValue), [initialValue]);
-  return (
-    <input
-      value={val}
-      onChange={e => setVal(e.target.value)}
-      onBlur={() => { if (val !== initialValue) onSave(val); }}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-      className="w-full bg-transparent text-sm text-slate-300 outline-none focus:ring-1 focus:ring-primary focus:bg-slate-900 rounded px-1.5 py-1 border border-transparent hover:border-slate-700/50"
-    />
-  );
+  return <input value={val} onChange={e => setVal(e.target.value)} onBlur={() => { if (val !== initialValue) onSave(val); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className="w-full bg-transparent text-sm text-slate-300 outline-none focus:ring-1 focus:ring-primary focus:bg-slate-900 rounded px-1.5 py-1 border border-transparent hover:border-slate-700/50" />;
 }
 
 function EditableTextarea({ initialValue, onSave }: { initialValue: string, onSave: (val: string) => void }) {
   const [val, setVal] = useState(initialValue);
   useEffect(() => setVal(initialValue), [initialValue]);
-  return (
-    <textarea
-      value={val}
-      onChange={e => setVal(e.target.value)}
-      onBlur={() => { if (val !== initialValue) onSave(val); }}
-      rows={1}
-      className="w-full bg-transparent text-sm text-slate-300 outline-none focus:ring-1 focus:ring-primary focus:bg-slate-900 rounded px-1.5 py-1 border border-transparent hover:border-slate-700/50 resize-none min-h-[32px] overflow-hidden"
-    />
-  );
+  return <textarea value={val} onChange={e => setVal(e.target.value)} onBlur={() => { if (val !== initialValue) onSave(val); }} rows={1} className="w-full bg-transparent text-sm text-slate-300 outline-none focus:ring-1 focus:ring-primary focus:bg-slate-900 rounded px-1.5 py-1 border border-transparent hover:border-slate-700/50 resize-none min-h-[32px] overflow-hidden" />;
 }
 
 export default function ContactsDirectory() {
@@ -85,11 +64,12 @@ export default function ContactsDirectory() {
     if (savedSort) setSortConfig(JSON.parse(savedSort));
   }, []);
 
+  // FIX: This now specifically checks the ID, not the entire changing object!
   useEffect(() => {
     setSelectedContacts(new Set());
     setSearchQuery('');
     setTagFilter([]);
-  }, [activeFolder]);
+  }, [activeFolder?.id]);
 
   useEffect(() => {
     if (!accountId) return;
@@ -120,8 +100,9 @@ export default function ContactsDirectory() {
     loadInitialData();
   }, [accountId, supabase]);
 
+  // FIX: This only refetches contacts when the folder ID changes, preventing glitches during rename!
   useEffect(() => {
-    if (!activeFolder || !accountId) return;
+    if (!activeFolder?.id || !accountId) return;
     async function loadFolderContacts() {
       setLoading(true);
       const { data: contactsData } = await supabase.from('contacts').select('*').eq('folder_id', activeFolder.id);
@@ -140,7 +121,7 @@ export default function ContactsDirectory() {
       setLoading(false);
     }
     loadFolderContacts();
-  }, [activeFolder, accountId, supabase]);
+  }, [activeFolder?.id, accountId, supabase]);
 
   const handleSort = (column: string) => {
     let direction: 'asc' | 'desc' | null = 'asc';
@@ -187,10 +168,8 @@ export default function ContactsDirectory() {
     setFolders(prev => prev.filter(f => f.id !== folderId));
   }
 
-  // --- NEW: FOLDER RENAME ENGINE ---
   async function handleUpdateFolderName(folderId: string, newName: string) {
-    if (!newName.trim() || newName === activeFolder?.name) return;
-    setActiveFolder((prev: any) => prev ? { ...prev, name: newName } : null);
+    if (!newName.trim()) return;
     setFolders((prev: any[]) => prev.map(f => f.id === folderId ? { ...f, name: newName } : f));
     const { error } = await supabase.from('folders').update({ name: newName.trim() }).eq('id', folderId);
     if (error) toast.error("Failed to rename folder.");
@@ -293,8 +272,7 @@ export default function ContactsDirectory() {
             ))}
           </div>
         )}
-        {/* We changed the onImported trigger to happen on modal CLOSE instead of immediately */}
-        <ImportModal open={isImportOpen} onOpenChange={setIsImportOpen} onImported={() => window.location.reload()} />
+        <ImportModal open={isImportOpen} onOpenChange={setIsImportOpen} onImported={() => window.location.reload()} folders={folders} />
       </div>
     );
   }
@@ -313,7 +291,6 @@ export default function ContactsDirectory() {
           <div className="flex items-center gap-3">
             <Folder className="size-6" style={{ color: activeFolder.color || '#3b82f6' }} />
             <div>
-              {/* EDITABLE FOLDER NAME INPUT */}
               <input
                 value={activeFolder.name}
                 onChange={(e) => setActiveFolder({ ...activeFolder, name: e.target.value })}
@@ -460,6 +437,9 @@ export default function ContactsDirectory() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Ensures the Import Modal inside the active folder also receives the updated folders list! */}
+      <ImportModal open={isImportOpen} onOpenChange={setIsImportOpen} onImported={() => window.location.reload()} folders={folders} />
     </div>
   );
 }
