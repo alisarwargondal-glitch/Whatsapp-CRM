@@ -3,7 +3,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { Folder, Users, ArrowLeft, Settings2, Search, Loader2, GripHorizontal, X, Upload, Trash2, Tag as TagIcon, ArrowUpDown } from 'lucide-react';
+import {
+  Folder, Users, ArrowLeft, Settings2, Search,
+  Loader2, GripHorizontal, X, Upload, Trash2,
+  Tag as TagIcon, ArrowUpDown, UserPlus // Added UserPlus here
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -40,6 +44,12 @@ export default function ContactsDirectory() {
   const [sortConfig, setSortConfig] = useState<{ column: string | null, direction: 'asc' | 'desc' | null }>({ column: null, direction: null });
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
   const [isImportOpen, setIsImportOpen] = useState(false);
+
+  // NEW: Manual Contact State
+  const [isAddContactOpen, setIsAddContactOpen] = useState(false);
+  const [isAddingContact, setIsAddingContact] = useState(false);
+  const [newContact, setNewContact] = useState({ name: '', phone: '', email: '', company: '', folder_id: '' });
+
   const [columnOrder, setColumnOrder] = useState(['name', 'phone', 'tags', 'email', 'company']);
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({ name: true, phone: true, tags: true, email: true, company: true });
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
@@ -64,7 +74,6 @@ export default function ContactsDirectory() {
     if (savedSort) setSortConfig(JSON.parse(savedSort));
   }, []);
 
-  // FIX: This now specifically checks the ID, not the entire changing object!
   useEffect(() => {
     setSelectedContacts(new Set());
     setSearchQuery('');
@@ -100,7 +109,6 @@ export default function ContactsDirectory() {
     loadInitialData();
   }, [accountId, supabase]);
 
-  // FIX: This only refetches contacts when the folder ID changes, preventing glitches during rename!
   useEffect(() => {
     if (!activeFolder?.id || !accountId) return;
     async function loadFolderContacts() {
@@ -204,6 +212,36 @@ export default function ContactsDirectory() {
     setEditingTagsFor(prev => prev ? { ...prev, tags: newTags } : null);
   }
 
+  // NEW: Handle Manual Contact Submit
+  async function handleManualAddSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newContact.phone || !newContact.folder_id) return toast.error("Phone number and Folder are required.");
+
+    setIsAddingContact(true);
+    const { data, error } = await supabase.from('contacts').insert([{
+      name: newContact.name,
+      phone: newContact.phone,
+      email: newContact.email,
+      company: newContact.company,
+      folder_id: newContact.folder_id
+    }]).select().single();
+
+    setIsAddingContact(false);
+
+    if (error) {
+      toast.error("Failed to add contact: " + error.message);
+    } else {
+      toast.success("Contact added successfully.");
+      setIsAddContactOpen(false);
+      setNewContact({ name: '', phone: '', email: '', company: '', folder_id: '' });
+
+      // Inject directly into UI if the user is currently viewing the folder they just saved to
+      if (activeFolder && activeFolder.id === newContact.folder_id) {
+        setContacts(prev => [{ ...data, custom_values: {}, tags: [] }, ...prev]);
+      }
+    }
+  }
+
   const handleDragStart = (e: React.DragEvent, colId: string) => e.dataTransfer.setData('text/plain', colId);
   const handleDrop = (e: React.DragEvent, targetColId: string) => {
     e.preventDefault();
@@ -246,13 +284,65 @@ export default function ContactsDirectory() {
     return <EditableTextarea initialValue={initialValue} onSave={(val) => handleInlineSave(contact.id, col, val, false)} />;
   }
 
+  // --- MODAL COMPONENT (Inserted so we can render it anywhere below) ---
+  const AddContactModal = (
+    <Dialog open={isAddContactOpen} onOpenChange={setIsAddContactOpen}>
+      <DialogContent className="bg-slate-900 border-slate-800 text-white">
+        <DialogHeader><DialogTitle>Add New Contact manually</DialogTitle></DialogHeader>
+        <form onSubmit={handleManualAddSubmit} className="space-y-4 pt-2">
+          <div className="space-y-2">
+            <Label className="text-slate-300">Assign to Folder *</Label>
+            <select
+              required
+              value={newContact.folder_id}
+              onChange={e => setNewContact({ ...newContact, folder_id: e.target.value })}
+              className="w-full bg-slate-950 border border-slate-700 rounded-md p-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none"
+            >
+              <option value="" disabled>Select a folder...</option>
+              {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-slate-300">Full Name</Label>
+              <Input value={newContact.name} onChange={e => setNewContact({ ...newContact, name: e.target.value })} className="bg-slate-950 border-slate-700 focus:border-primary" placeholder="e.g. Ali Ahmed" />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Phone *</Label>
+              <Input required value={newContact.phone} onChange={e => setNewContact({ ...newContact, phone: e.target.value })} className="bg-slate-950 border-slate-700 focus:border-primary" placeholder="+971501234567" />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Email Address</Label>
+              <Input type="email" value={newContact.email} onChange={e => setNewContact({ ...newContact, email: e.target.value })} className="bg-slate-950 border-slate-700 focus:border-primary" placeholder="ali@example.com" />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Company</Label>
+              <Input value={newContact.company} onChange={e => setNewContact({ ...newContact, company: e.target.value })} className="bg-slate-950 border-slate-700 focus:border-primary" placeholder="Acme Real Estate" />
+            </div>
+          </div>
+          <DialogFooter className="mt-6">
+            <Button type="button" variant="ghost" onClick={() => setIsAddContactOpen(false)} className="text-slate-400 hover:text-white">Cancel</Button>
+            <Button type="submit" disabled={isAddingContact} className="bg-primary text-white hover:bg-primary/90">
+              {isAddingContact ? <Loader2 className="size-4 animate-spin mr-2" /> : <UserPlus className="size-4 mr-2" />}
+              Save Contact
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+
   if (!activeFolder) {
     return (
       <div className="p-6 max-w-7xl mx-auto space-y-6">
         <style>{hideResizeHandleStyles}</style>
         <div className="flex justify-between items-center">
           <div><h1 className="text-2xl font-bold text-white">Contact Folders</h1><p className="text-slate-400 text-sm">Select a directory to view your imported groups.</p></div>
-          <Button onClick={() => setIsImportOpen(true)} className="bg-primary hover:bg-primary/90 text-white"><Upload className="size-4 mr-2" /> Import CSV</Button>
+          <div className="flex items-center gap-3">
+            {/* Added Manual Button Here */}
+            <Button onClick={() => { setNewContact(prev => ({ ...prev, folder_id: '' })); setIsAddContactOpen(true); }} className="bg-slate-800 hover:bg-slate-700 text-white border border-slate-700"><UserPlus className="size-4 mr-2" /> Add Contact</Button>
+            <Button onClick={() => setIsImportOpen(true)} className="bg-primary hover:bg-primary/90 text-white"><Upload className="size-4 mr-2" /> Import CSV</Button>
+          </div>
         </div>
         {loading ? <div className="flex justify-center p-12"><Loader2 className="size-8 animate-spin text-primary" /></div> : folders.length === 0 ? (
           <div className="text-center py-20 border border-dashed border-slate-700 rounded-xl bg-slate-900/50 flex flex-col items-center">
@@ -273,6 +363,7 @@ export default function ContactsDirectory() {
           </div>
         )}
         <ImportModal open={isImportOpen} onOpenChange={setIsImportOpen} onImported={() => window.location.reload()} folders={folders} />
+        {AddContactModal}
       </div>
     );
   }
@@ -304,6 +395,9 @@ export default function ContactsDirectory() {
         </div>
 
         <div className="flex items-center gap-3 relative">
+          {/* Added Manual Button Here Too! */}
+          <Button onClick={() => { setNewContact(prev => ({ ...prev, folder_id: activeFolder.id })); setIsAddContactOpen(true); }} className="bg-primary hover:bg-primary/90 text-white"><UserPlus className="size-4 mr-2" /> Add Contact</Button>
+
           {selectedContacts.size > 0 && <Button variant="destructive" onClick={handleBulkDelete} className="bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white border border-red-500/30"><Trash2 className="size-4 mr-2" /> Delete ({selectedContacts.size})</Button>}
           <div className="relative">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -438,8 +532,10 @@ export default function ContactsDirectory() {
         </DialogContent>
       </Dialog>
 
-      {/* Ensures the Import Modal inside the active folder also receives the updated folders list! */}
       <ImportModal open={isImportOpen} onOpenChange={setIsImportOpen} onImported={() => window.location.reload()} folders={folders} />
+
+      {/* Ensures the Add Contact modal renders on the active folder page too */}
+      {AddContactModal}
     </div>
   );
 }
