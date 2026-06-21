@@ -16,10 +16,17 @@ import {
 } from '@/components/ui/dialog';
 import { ArrowLeft, Send, Loader2, Users, Save } from 'lucide-react';
 
+// FIX: Expanded the interface to properly recognize customField logic
 interface AudienceConfig {
   type: string;
   tagIds?: string[];
   csvContacts?: { phone: string; name?: string }[];
+  customField?: {
+    fieldId: string;
+    operator: 'is' | 'is_not' | 'contains';
+    value: string;
+  };
+  excludeTagIds?: string[];
 }
 
 interface Step4Props {
@@ -60,6 +67,7 @@ export function Step4ScheduleSend({
             .from('contacts')
             .select('*', { count: 'exact', head: true });
           setEstimatedReach(count ?? 0);
+
         } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
           const { data: contactTags } = await supabase
             .from('contact_tags')
@@ -68,8 +76,30 @@ export function Step4ScheduleSend({
 
           const uniqueIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
           setEstimatedReach(uniqueIds.size);
+
         } else if (audience.type === 'csv' && audience.csvContacts) {
           setEstimatedReach(audience.csvContacts.length);
+
+          // FIX: Added the specific database query logic for custom_field!
+        } else if (audience.type === 'custom_field' && audience.customField) {
+          let query = supabase
+            .from('contact_custom_values')
+            .select('contact_id')
+            .eq('custom_field_id', audience.customField.fieldId);
+
+          // Apply the correct operator chosen in Step 2
+          if (audience.customField.operator === 'is') {
+            query = query.eq('value', audience.customField.value);
+          } else if (audience.customField.operator === 'is_not') {
+            query = query.neq('value', audience.customField.value);
+          } else if (audience.customField.operator === 'contains') {
+            query = query.ilike('value', `%${audience.customField.value}%`);
+          }
+
+          const { data: customValues } = await query;
+          const uniqueIds = new Set((customValues ?? []).map((cv) => cv.contact_id));
+          setEstimatedReach(uniqueIds.size);
+
         } else {
           setEstimatedReach(0);
         }
@@ -81,6 +111,7 @@ export function Step4ScheduleSend({
     calculateReach();
   }, [audience]);
 
+  // FIX: Updated label so it looks nice on the summary card
   const audienceLabel =
     audience.type === 'all'
       ? 'All Contacts'
@@ -88,7 +119,9 @@ export function Step4ScheduleSend({
         ? `Tags (${audience.tagIds?.length ?? 0} selected)`
         : audience.type === 'csv'
           ? 'CSV Upload'
-          : 'Custom';
+          : audience.type === 'custom_field'
+            ? 'Custom Field Filter'
+            : 'Custom';
 
   return (
     <div className="space-y-6">
@@ -168,7 +201,7 @@ export function Step4ScheduleSend({
           disabled={isProcessing}
           className="border-slate-700 text-slate-300"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="h-4 w-4 mr-2" />
           Back
         </Button>
 
@@ -180,55 +213,53 @@ export function Step4ScheduleSend({
               disabled={!name.trim() || isProcessing}
               className="border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
             >
-              <Save className="h-4 w-4" />
+              <Save className="h-4 w-4 mr-2" />
               Save as Draft
             </Button>
           )}
 
           <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
-          <DialogTrigger
-            render={
+            <DialogTrigger asChild>
               <Button
-                disabled={!name.trim() || isProcessing}
+                disabled={!name.trim() || isProcessing || estimatedReach === 0}
                 className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              />
-            }
-          >
-            <Send className="h-4 w-4" />
-            Send Broadcast
-          </DialogTrigger>
-          <DialogContent className="border-slate-700 bg-slate-900 sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="text-white">Confirm Broadcast</DialogTitle>
-              <DialogDescription className="text-slate-400">
-                You are about to send this broadcast to{' '}
-                <span className="font-medium text-white">{estimatedReach.toLocaleString()}</span>{' '}
-                contacts using the{' '}
-                <span className="font-medium text-white">{template.name}</span> template.
-                This action cannot be undone.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setShowConfirm(false)}
-                className="border-slate-700 text-slate-300"
               >
-                Cancel
+                <Send className="h-4 w-4 mr-2" />
+                Send Broadcast
               </Button>
-              <Button
-                onClick={() => {
-                  setShowConfirm(false);
-                  onSend();
-                }}
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
-              >
-                <Send className="h-4 w-4" />
-                Confirm & Send
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </DialogTrigger>
+            <DialogContent className="border-slate-700 bg-slate-900 sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="text-white">Confirm Broadcast</DialogTitle>
+                <DialogDescription className="text-slate-400">
+                  You are about to send this broadcast to{' '}
+                  <span className="font-medium text-white">{estimatedReach.toLocaleString()}</span>{' '}
+                  contacts using the{' '}
+                  <span className="font-medium text-white">{template.name}</span> template.
+                  This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowConfirm(false)}
+                  className="border-slate-700 text-slate-300"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    setShowConfirm(false);
+                    onSend();
+                  }}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  <Send className="h-4 w-4 mr-2" />
+                  Confirm & Send
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>
