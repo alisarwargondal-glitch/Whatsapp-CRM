@@ -4,8 +4,7 @@ import { extractVariableIndices } from './template-validators';
 export interface SendTimeParams {
   body?: string[];
   headerText?: string;
-  headerMediaUrl?: string;
-  headerMediaId?: string;
+  headerMediaId?: string; // URL parameter entirely removed
   buttonParams?: Record<number, string>;
 }
 
@@ -19,12 +18,12 @@ export type MetaSendComponent =
     parameters: MetaSendParameter[];
   };
 
-// Strictly defined. No nulls allowed.
+// STRICTLY ONLY ID. No Links. No Strings.
 type MetaSendParameter =
   | { type: 'text'; text: string }
-  | { type: 'image'; image: { link?: string; id?: number } }
-  | { type: 'video'; video: { link?: string; id?: number } }
-  | { type: 'document'; document: { link?: string; id?: number } }
+  | { type: 'image'; image: { id: number } }
+  | { type: 'video'; video: { id: number } }
+  | { type: 'document'; document: { id: number } }
   | { type: 'coupon_code'; coupon_code: string }
   | { type: 'payload'; payload: string };
 
@@ -48,34 +47,21 @@ function buildHeaderComponent(
     };
   }
 
-  const link = params.headerMediaUrl ?? template.header_media_url;
-  const id = params.headerMediaId ?? template.header_handle;
+  // We ONLY accept a real Media ID passed at send time.
+  // We explicitly DO NOT fallback to template.header_handle because that is just a sample ID and causes #100 errors.
+  const id = params.headerMediaId;
 
-  if (!link && !id) {
-    throw new Error(`${headerType} header requires a media link or id at send time.`);
+  if (!id) {
+    throw new Error(`CRITICAL: Meta requires a valid Media ID to send this broadcast. The sample image you uploaded during template creation cannot be reused.`);
   }
 
-  // Build the payload purely. No undefined or null keys will exist here.
-  let mediaPayload: any = {};
+  const numId = parseInt(String(id).trim(), 10);
 
-  if (link && typeof link === 'string' && link.trim() !== '') {
-    mediaPayload = { link: link.trim() };
-  } else if (id) {
-    if (typeof id === 'string' && id.startsWith('http')) {
-      mediaPayload = { link: id.trim() };
-    } else {
-      const numId = parseInt(String(id).trim(), 10);
-      if (!isNaN(numId)) {
-        mediaPayload = { id: numId };
-      }
-    }
+  if (isNaN(numId)) {
+    throw new Error(`CRITICAL: Meta expects the Media ID to be a strict number. Received: ${id}`);
   }
 
-  // FAILSAFE: If the data was garbage, catch it locally before sending to Meta.
-  if (!mediaPayload.link && !mediaPayload.id) {
-    console.error("CRITICAL MEDIA ERROR - Invalid Data Provided:", { link, id });
-    throw new Error("Could not construct a valid media payload. URL or ID is invalid. Check your terminal logs.");
-  }
+  const mediaPayload = { id: numId };
 
   return {
     type: 'header',
