@@ -61,12 +61,15 @@ export function resolveVariables(
   contact: Contact,
   customValues?: Map<string, string>,
 ): string[] {
-  const keys = Object.keys(variables).sort((a, b) => {
-    const an = Number(a);
-    const bn = Number(b);
-    if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
-    return a.localeCompare(b);
-  });
+  // 🔥 THE FIX: We explicitly filter out the image URL so it doesn't accidentally get printed in the text body!
+  const keys = Object.keys(variables)
+    .filter(key => key !== 'headerMediaUrl' && key !== 'header_media_url')
+    .sort((a, b) => {
+      const an = Number(a);
+      const bn = Number(b);
+      if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
+      return a.localeCompare(b);
+    });
 
   return keys.map((key) => {
     const v = variables[key];
@@ -367,7 +370,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       let failedCount = 0;
       const totalRecipients = recipients.length;
 
-      // Extract the uploaded URL directly from the variables dictionary or the wrapper override
       const finalMediaUrl = payload.template.header_media_url || payload.variables['headerMediaUrl']?.value;
 
       for (let i = 0; i < recipients.length; i += SEND_BATCH_SIZE) {
@@ -396,9 +398,8 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
               recipients: apiRecipients,
               template_name: payload.template.name,
               template_language: payload.template.language ?? 'en_US',
-              // THE BRIDGE FIX IS HERE! Pass the media URL explicitly to the backend
               headerMediaUrl: finalMediaUrl,
-              header_media_url: finalMediaUrl // Passing both naming styles just in case your backend expects snake_case
+              header_media_url: finalMediaUrl
             }),
           });
 
