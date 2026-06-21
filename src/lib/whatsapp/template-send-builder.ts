@@ -19,7 +19,6 @@ export type MetaSendComponent =
     parameters: MetaSendParameter[];
   };
 
-// Defined exactly to Meta's strict specifications
 type MetaSendParameter =
   | { type: 'text'; text: string }
   | { type: 'image'; image: { link?: string; id?: number } }
@@ -32,8 +31,10 @@ function buildHeaderComponent(
   template: MessageTemplate,
   params: SendTimeParams,
 ): MetaSendComponent | null {
-  const headerType = template.header_type;
-  if (!headerType || headerType === 'none') return null;
+  if (!template.header_type || template.header_type === 'none') return null;
+
+  // 🔥 THE FIX: Force the DB string to lowercase so "IMAGE" safely triggers the image logic!
+  const headerType = template.header_type.toLowerCase();
 
   if (headerType === 'text') {
     const varCount = extractVariableIndices(template.header_content ?? '').length;
@@ -48,34 +49,30 @@ function buildHeaderComponent(
     };
   }
 
-  // Grab whatever the database has stored
   const link = params.headerMediaUrl || template.header_media_url;
   const idOrUrl = params.headerMediaId || template.header_handle;
 
   let mediaPayload: any = null;
 
-  // 1. Prefer a URL (Link). This is the standard CRM way to satisfy Meta.
-  // By NOT including an 'id' key here, we completely bypass the JSON Schema crash.
+  // Safely map the URL
   if (typeof link === 'string' && link.includes('http')) {
     mediaPayload = { link: link.trim() };
   }
   else if (typeof idOrUrl === 'string' && idOrUrl.includes('http')) {
     mediaPayload = { link: idOrUrl.trim() };
   }
-  // 2. Check for a valid Meta Media ID (Must be purely numbers, usually 14+ digits)
   else if (idOrUrl && /^\d+$/.test(String(idOrUrl).trim())) {
     mediaPayload = { id: parseInt(String(idOrUrl).trim(), 10) };
   }
 
-  // If the payload is STILL empty, it means the database only has Meta's "Sample Handle" 
-  // (e.g. 4::aW1h...) which CANNOT be used to send a broadcast.
   if (!mediaPayload) {
-    throw new Error(`Meta API Rule: You must provide a valid Image URL or a freshly uploaded Media ID to send this broadcast. The template sample image cannot be reused.`);
+    throw new Error(`Meta API Rule: You must provide a valid Image URL or a freshly uploaded Media ID to send this broadcast.`);
   }
 
   return {
     type: 'header',
     parameters: [
+      // Because we used .toLowerCase(), this will now properly trigger!
       headerType === 'image'
         ? { type: 'image', image: mediaPayload }
         : headerType === 'video'
