@@ -15,7 +15,8 @@ import {
   rateLimitResponse,
   RATE_LIMITS,
 } from '@/lib/rate-limit'
-
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
 interface BroadcastResult {
   phone: string
   status: 'sent' | 'failed'
